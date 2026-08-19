@@ -1,43 +1,147 @@
 import { useEffect, useMemo, useState } from "react";
+import { supabase } from "./supabaseClient";
 
 function Production() {
+  // =========================================================
+  // STATE
+  // =========================================================
+
   const [sites, setSites] = useState([]);
   const [panels, setPanels] = useState([]);
-  const [selectedSiteId, setSelectedSiteId] = useState("");
+
+  const [selectedSiteId, setSelectedSiteId] =
+    useState("");
+
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   // =========================================================
-  // LOAD TRACKERZ DATA
+  // LOAD SITES + PANELS FROM SUPABASE
   // =========================================================
 
-  const loadData = () => {
+  const loadData = async () => {
     try {
-      const savedSites = JSON.parse(
-        localStorage.getItem("trackerzSites") || "[]"
+      setError("");
+
+      // -----------------------------------------------------
+      // LOAD SITES
+      // -----------------------------------------------------
+
+      const {
+        data: sitesData,
+        error: sitesError,
+      } = await supabase
+        .from("sites")
+        .select("*")
+        .order("id", {
+          ascending: true,
+        });
+
+      if (sitesError) {
+        console.error(
+          "Production - sites error:",
+          sitesError
+        );
+
+        throw sitesError;
+      }
+
+      // -----------------------------------------------------
+      // LOAD PANELS
+      // -----------------------------------------------------
+
+      const {
+        data: panelsData,
+        error: panelsError,
+      } = await supabase
+        .from("panels")
+        .select("*")
+        .order("id", {
+          ascending: true,
+        });
+
+      if (panelsError) {
+        console.error(
+          "Production - panels error:",
+          panelsError
+        );
+
+        throw panelsError;
+      }
+
+      // -----------------------------------------------------
+      // SAVE TO REACT STATE
+      // -----------------------------------------------------
+
+      const safeSites = Array.isArray(
+        sitesData
+      )
+        ? sitesData
+        : [];
+
+      const safePanels = Array.isArray(
+        panelsData
+      )
+        ? panelsData
+        : [];
+
+      console.log(
+        "TRACKERZ PRODUCTION - SUPABASE SITES:",
+        safeSites
       );
 
-      const savedPanels = JSON.parse(
-        localStorage.getItem("trackerzPanels") || "[]"
+      console.log(
+        "TRACKERZ PRODUCTION - SUPABASE PANELS:",
+        safePanels
       );
 
-      setSites(
-        Array.isArray(savedSites)
-          ? savedSites
-          : []
-      );
+      setSites(safeSites);
+      setPanels(safePanels);
 
-      setPanels(
-        Array.isArray(savedPanels)
-          ? savedPanels
-          : []
-      );
-    } catch (error) {
+      // -----------------------------------------------------
+      // KEEP CURRENT SITE IF IT STILL EXISTS
+      // -----------------------------------------------------
+
+      if (selectedSiteId) {
+        const currentSiteExists =
+          safeSites.some(
+            (site) =>
+              String(site.id) ===
+              String(selectedSiteId)
+          );
+
+        if (!currentSiteExists) {
+          setSelectedSiteId("");
+        }
+      }
+
+      // -----------------------------------------------------
+      // AUTOMATICALLY SELECT FIRST SITE
+      // -----------------------------------------------------
+
+      if (
+        !selectedSiteId &&
+        safeSites.length > 0
+      ) {
+        setSelectedSiteId(
+          String(safeSites[0].id)
+        );
+      }
+    } catch (err) {
       console.error(
-        "Unable to load Trackerz production data:",
-        error
+        "Unable to load Production data:",
+        err
+      );
+
+      setError(
+        err?.message ||
+          "Unable to load Production data from Supabase."
       );
 
       setSites([]);
       setPanels([]);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -54,14 +158,47 @@ function Production() {
   // =========================================================
 
   useEffect(() => {
-    const refresh = () => {
+    const handleFocus = () => {
       loadData();
     };
 
-    window.addEventListener("focus", refresh);
+    window.addEventListener(
+      "focus",
+      handleFocus
+    );
 
     return () => {
-      window.removeEventListener("focus", refresh);
+      window.removeEventListener(
+        "focus",
+        handleFocus
+      );
+    };
+  }, []);
+
+  // =========================================================
+  // REFRESH WHEN TAB BECOMES VISIBLE
+  // =========================================================
+
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (
+        document.visibilityState ===
+        "visible"
+      ) {
+        loadData();
+      }
+    };
+
+    document.addEventListener(
+      "visibilitychange",
+      handleVisibility
+    );
+
+    return () => {
+      document.removeEventListener(
+        "visibilitychange",
+        handleVisibility
+      );
     };
   }, []);
 
@@ -72,7 +209,9 @@ function Production() {
   const getPanelStatus = (panel) => {
     return String(
       panel?.status ||
+        panel?.production_status ||
         panel?.productionStatus ||
+        panel?.pack_status ||
         panel?.packStatus ||
         ""
     )
@@ -80,25 +219,33 @@ function Production() {
       .toLowerCase();
   };
 
+  // =========================================================
+  // CHECK PACKED STATUS
+  // =========================================================
+
   const isPacked = (panel) => {
-    const status = getPanelStatus(panel);
+    const status = getPanelStatus(
+      panel
+    );
 
     return (
+      panel?.packed === true ||
+      panel?.is_packed === true ||
+      panel?.isPacked === true ||
       status === "packed" ||
       status === "packing" ||
       status === "completed" ||
-      status === "delivered" ||
-      panel?.packed === true ||
-      panel?.isPacked === true
+      status === "delivered"
     );
   };
 
-  const getSiteId = (site) => {
-    return String(site?.id || "");
-  };
+  // =========================================================
+  // SITE NAME
+  // =========================================================
 
   const getSiteName = (site) => {
     return (
+      site?.site_name ||
       site?.siteName ||
       site?.name ||
       "Unnamed Site"
@@ -106,7 +253,56 @@ function Production() {
   };
 
   // =========================================================
-  // GET PANELS BELONGING TO SITE
+  // CLIENT NAME
+  // =========================================================
+
+  const getClientName = (site) => {
+    return (
+      site?.client_name ||
+      site?.clientName ||
+      site?.customer ||
+      "Client"
+    );
+  };
+
+  // =========================================================
+  // GET SITE ID
+  // =========================================================
+
+  const getSiteId = (site) => {
+    return String(
+      site?.id || ""
+    );
+  };
+
+  // =========================================================
+  // GET PANEL SITE ID
+  // =========================================================
+
+  const getPanelSiteId = (panel) => {
+    return String(
+      panel?.site_id ||
+        panel?.siteId ||
+        ""
+    );
+  };
+
+  // =========================================================
+  // GET PANEL SITE NAME
+  // =========================================================
+
+  const getPanelSiteName = (panel) => {
+    return String(
+      panel?.site_name ||
+        panel?.siteName ||
+        ""
+    )
+      .trim()
+      .toLowerCase();
+  };
+
+  // =========================================================
+  // GET PANELS FOR SITE
   // =========================================================
 
   const getSitePanels = (site) => {
@@ -114,34 +310,49 @@ function Production() {
       return [];
     }
 
-    const siteId = String(site.id || "");
+    const siteId = getSiteId(site);
 
-    const siteName = String(
-      site.siteName || site.name || ""
+    const siteName = getSiteName(
+      site
     )
       .trim()
       .toLowerCase();
 
-    return panels.filter((panel) => {
-      const panelSiteId = String(
-        panel?.siteId || ""
-      );
+    return panels.filter(
+      (panel) => {
+        const panelSiteId =
+          getPanelSiteId(panel);
 
-      const panelSiteName = String(
-        panel?.siteName || ""
-      )
-        .trim()
-        .toLowerCase();
+        const panelSiteName =
+          getPanelSiteName(panel);
 
-      return (
-        panelSiteId === siteId ||
-        (
-          siteName !== "" &&
-          panelSiteName !== "" &&
-          siteName === panelSiteName
-        )
-      );
-    });
+        // ---------------------------------------------------
+        // PRIMARY MATCH = SITE ID
+        // ---------------------------------------------------
+
+        if (
+          panelSiteId &&
+          panelSiteId === siteId
+        ) {
+          return true;
+        }
+
+        // ---------------------------------------------------
+        // FALLBACK = SITE NAME
+        // ---------------------------------------------------
+
+        if (
+          !panelSiteId &&
+          panelSiteName &&
+          siteName &&
+          panelSiteName === siteName
+        ) {
+          return true;
+        }
+
+        return false;
+      }
+    );
   };
 
   // =========================================================
@@ -160,34 +371,59 @@ function Production() {
           String(selectedSiteId)
       ) || null
     );
-  }, [sites, selectedSiteId]);
+  }, [
+    sites,
+    selectedSiteId,
+  ]);
+
+  // =========================================================
+  // SELECTED SITE PANELS
+  // =========================================================
+
+  const sitePanels = useMemo(() => {
+    if (!selectedSite) {
+      return [];
+    }
+
+    return getSitePanels(
+      selectedSite
+    );
+  }, [
+    selectedSite,
+    panels,
+  ]);
 
   // =========================================================
   // PACKED PANELS
   // =========================================================
 
   const packedPanels = useMemo(() => {
-    if (!selectedSite) {
-      return [];
-    }
-
-    return getSitePanels(selectedSite).filter(
-      (panel) => isPacked(panel)
+    return sitePanels.filter(
+      (panel) =>
+        isPacked(panel)
     );
-  }, [selectedSite, panels]);
+  }, [sitePanels]);
 
   // =========================================================
   // GET PACKET NUMBER
   // =========================================================
 
-  const getPacketNumber = (panel) => {
+  const getPacketNumber = (
+    panel
+  ) => {
     return (
+      panel?.packet_number ||
       panel?.packetNumber ||
+      panel?.packet_no ||
       panel?.packetNo ||
-      panel?.packet ||
-      panel?.packNo ||
+      panel?.packet_id ||
       panel?.packetId ||
+      panel?.packet ||
+      panel?.pack_no ||
+      panel?.packNo ||
+      panel?.box_number ||
       panel?.boxNumber ||
+      panel?.box_no ||
       panel?.boxNo ||
       "Not Assigned"
     );
@@ -200,39 +436,65 @@ function Production() {
   const packetGroups = useMemo(() => {
     const groups = {};
 
-    packedPanels.forEach((panel) => {
-      const packet = String(
-        getPacketNumber(panel)
-      );
+    packedPanels.forEach(
+      (panel) => {
+        const packet =
+          String(
+            getPacketNumber(
+              panel
+            )
+          );
 
-      if (!groups[packet]) {
-        groups[packet] = [];
+        if (!groups[packet]) {
+          groups[packet] = [];
+        }
+
+        groups[packet].push(
+          panel
+        );
       }
+    );
 
-      groups[packet].push(panel);
-    });
-
-    return Object.entries(groups)
-      .sort(([a], [b]) =>
-        a.localeCompare(b, undefined, {
-          numeric: true,
-        })
+    return Object.entries(
+      groups
+    )
+      .sort(
+        ([a], [b]) =>
+          a.localeCompare(
+            b,
+            undefined,
+            {
+              numeric: true,
+            }
+          )
       )
-      .map(([packet, packetPanels]) => ({
-        packet,
-        panels: packetPanels,
-      }));
+      .map(
+        ([
+          packet,
+          packetPanels,
+        ]) => ({
+          packet,
+          panels: packetPanels,
+        })
+      );
   }, [packedPanels]);
 
   // =========================================================
   // SAFE VALUE
   // =========================================================
 
-  const value = (item, keys) => {
-    for (const key of keys) {
+  const value = (
+    item,
+    keys
+  ) => {
+    for (
+      const key of keys
+    ) {
       if (
-        item?.[key] !== undefined &&
-        item?.[key] !== null &&
+        item?.[key] !==
+          undefined &&
+        item?.[key] !==
+          null &&
         item?.[key] !== ""
       ) {
         return item[key];
@@ -248,31 +510,38 @@ function Production() {
 
   const downloadExcel = () => {
     if (!selectedSite) {
-      alert("Please select a site first.");
+      alert(
+        "Please select a site first."
+      );
+
       return;
     }
 
-    if (packedPanels.length === 0) {
+    if (
+      packedPanels.length === 0
+    ) {
       alert(
         "No packed panels found for this site."
       );
+
       return;
     }
 
     const rows = [];
 
     // -------------------------------------------------------
-    // EXCEL HEADER
+    // HEADER
     // -------------------------------------------------------
 
     rows.push([
       "Site",
+      "Client",
       "Packet",
       "Panel QR",
       "Panel ID",
       "Room",
       "Unit",
-      "Description",
+      "Panel Name",
       "Material",
       "Thickness",
       "Length",
@@ -286,94 +555,139 @@ function Production() {
     // -------------------------------------------------------
 
     packetGroups.forEach(
-      ({ packet, panels: packetPanels }) => {
-        packetPanels.forEach((panel) => {
-          rows.push([
-            getSiteName(selectedSite),
+      ({
+        packet,
+        panels: packetPanels,
+      }) => {
+        packetPanels.forEach(
+          (panel) => {
+            rows.push([
+              getSiteName(
+                selectedSite
+              ),
 
-            packet,
+              getClientName(
+                selectedSite
+              ),
 
-            value(panel, [
-              "qr",
-              "qrCode",
-              "qrData",
-              "panelQR",
-              "panelQr",
-              "code",
-            ]),
+              packet,
 
-            value(panel, [
-              "panelId",
-              "id",
-              "itemId",
-              "cutlistId",
-            ]),
+              value(panel, [
+                "qr_data",
+                "qrData",
+                "qr_code",
+                "qrCode",
+                "qr",
+                "panel_qr",
+                "panelQR",
+                "code",
+              ]),
 
-            value(panel, [
-              "room",
-              "roomName",
-            ]),
+              value(panel, [
+                "panel_name",
+                "panelName",
+                "panel_id",
+                "panelId",
+                "id",
+              ]),
 
-            value(panel, [
-              "unit",
-              "unitName",
-              "cabinet",
-            ]),
+              value(panel, [
+                "room",
+                "room_name",
+                "roomName",
+              ]),
 
-            value(panel, [
-              "description",
-              "panelName",
-              "name",
-              "partName",
-            ]),
+              value(panel, [
+                "unit",
+                "unit_name",
+                "unitName",
+                "cabinet",
+              ]),
 
-            value(panel, [
-              "material",
-              "materialName",
-            ]),
+              value(panel, [
+                "panel_name",
+                "panelName",
+                "description",
+                "name",
+                "partName",
+              ]),
 
-            value(panel, [
-              "thickness",
-              "thicknessMm",
-              "thicknessMM",
-            ]),
+              value(panel, [
+                "material",
+                "material_name",
+                "materialName",
+              ]),
 
-            value(panel, [
-              "length",
-              "lengthMm",
-              "lengthMM",
-            ]),
+              value(panel, [
+                "thickness",
+                "thickness_mm",
+                "thicknessMm",
+                "thicknessMM",
+              ]),
 
-            value(panel, [
-              "width",
-              "widthMm",
-              "widthMM",
-            ]),
+              value(panel, [
+                "length",
+                "length_mm",
+                "lengthMm",
+                "lengthMM",
+              ]),
 
-            value(panel, [
-              "quantity",
-              "qty",
-            ]) || 1,
+              value(panel, [
+                "width",
+                "width_mm",
+                "widthMm",
+                "widthMM",
+              ]),
 
-            getPanelStatus(panel) ||
-              "Packed",
-          ]);
-        });
+              value(panel, [
+                "quantity",
+                "qty",
+              ]) || 1,
+
+              getPanelStatus(
+                panel
+              ) || "Packed",
+            ]);
+          }
+        );
       }
     );
 
     // -------------------------------------------------------
-    // CREATE EXCEL-COMPATIBLE HTML
+    // ESCAPE HTML
     // -------------------------------------------------------
 
-    const escapeHtml = (text) => {
-      return String(text ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
+    const escapeHtml = (
+      text
+    ) => {
+      return String(
+        text ?? ""
+      )
+        .replace(
+          /&/g,
+          "&amp;"
+        )
+        .replace(
+          /</g,
+          "&lt;"
+        )
+        .replace(
+          />/g,
+          "&gt;"
+        )
+        .replace(
+          /"/g,
+          "&quot;"
+        )
+        .replace(
+          /'/g,
+          "&#039;"
+        );
     };
+
+    // -------------------------------------------------------
+    // CREATE HTML TABLE
+    // -------------------------------------------------------
 
     let table = `
       <html>
@@ -399,27 +713,37 @@ function Production() {
           }
         </style>
       </head>
+
       <body>
         <table>
     `;
 
-    rows.forEach((row, rowIndex) => {
-      table += "<tr>";
+    rows.forEach(
+      (
+        row,
+        rowIndex
+      ) => {
+        table += "<tr>";
 
-      row.forEach((cell) => {
-        if (rowIndex === 0) {
-          table += `<th>${escapeHtml(
-            cell
-          )}</th>`;
-        } else {
-          table += `<td>${escapeHtml(
-            cell
-          )}</td>`;
-        }
-      });
+        row.forEach(
+          (cell) => {
+            if (
+              rowIndex === 0
+            ) {
+              table += `<th>${escapeHtml(
+                cell
+              )}</th>`;
+            } else {
+              table += `<td>${escapeHtml(
+                cell
+              )}</td>`;
+            }
+          }
+        );
 
-      table += "</tr>";
-    });
+        table += "</tr>";
+      }
+    );
 
     table += `
         </table>
@@ -427,23 +751,35 @@ function Production() {
       </html>
     `;
 
-    const blob = new Blob(
-      [table],
-      {
-        type: "application/vnd.ms-excel",
-      }
-    );
+    // -------------------------------------------------------
+    // DOWNLOAD
+    // -------------------------------------------------------
+
+    const blob =
+      new Blob(
+        [table],
+        {
+          type:
+            "application/vnd.ms-excel",
+        }
+      );
 
     const url =
-      window.URL.createObjectURL(blob);
+      window.URL.createObjectURL(
+        blob
+      );
 
     const link =
-      document.createElement("a");
+      document.createElement(
+        "a"
+      );
 
     link.href = url;
 
     const safeSiteName =
-      getSiteName(selectedSite)
+      getSiteName(
+        selectedSite
+      )
         .replace(
           /[^a-z0-9]/gi,
           "_"
@@ -456,17 +792,23 @@ function Production() {
     link.download =
       `${safeSiteName}_Packed_Panels.xls`;
 
-    document.body.appendChild(link);
+    document.body.appendChild(
+      link
+    );
 
     link.click();
 
-    document.body.removeChild(link);
+    document.body.removeChild(
+      link
+    );
 
-    window.URL.revokeObjectURL(url);
+    window.URL.revokeObjectURL(
+      url
+    );
   };
 
   // =========================================================
-  // DOWNLOAD PACKET REPORT
+  // DOWNLOAD PACKET EXCEL
   // =========================================================
 
   const downloadPacketExcel = (
@@ -481,10 +823,11 @@ function Production() {
 
     rows.push([
       "Site",
+      "Client",
       "Packet",
       "Panel QR",
       "Panel ID",
-      "Description",
+      "Panel Name",
       "Material",
       "Thickness",
       "Length",
@@ -493,101 +836,154 @@ function Production() {
       "Status",
     ]);
 
-    packetPanels.forEach((panel) => {
-      rows.push([
-        getSiteName(selectedSite),
-        packet,
+    packetPanels.forEach(
+      (panel) => {
+        rows.push([
+          getSiteName(
+            selectedSite
+          ),
 
-        value(panel, [
-          "qr",
-          "qrCode",
-          "qrData",
-          "panelQR",
-          "panelQr",
-          "code",
-        ]),
+          getClientName(
+            selectedSite
+          ),
 
-        value(panel, [
-          "panelId",
-          "id",
-          "itemId",
-          "cutlistId",
-        ]),
+          packet,
 
-        value(panel, [
-          "description",
-          "panelName",
-          "name",
-          "partName",
-        ]),
+          value(panel, [
+            "qr_data",
+            "qrData",
+            "qr_code",
+            "qrCode",
+            "qr",
+            "panel_qr",
+            "panelQR",
+            "code",
+          ]),
 
-        value(panel, [
-          "material",
-          "materialName",
-        ]),
+          value(panel, [
+            "panel_name",
+            "panelName",
+            "panel_id",
+            "panelId",
+            "id",
+          ]),
 
-        value(panel, [
-          "thickness",
-          "thicknessMm",
-          "thicknessMM",
-        ]),
+          value(panel, [
+            "panel_name",
+            "panelName",
+            "description",
+            "name",
+            "partName",
+          ]),
 
-        value(panel, [
-          "length",
-          "lengthMm",
-          "lengthMM",
-        ]),
+          value(panel, [
+            "material",
+            "material_name",
+            "materialName",
+          ]),
 
-        value(panel, [
-          "width",
-          "widthMm",
-          "widthMM",
-        ]),
+          value(panel, [
+            "thickness",
+            "thickness_mm",
+            "thicknessMm",
+            "thicknessMM",
+          ]),
 
-        value(panel, [
-          "quantity",
-          "qty",
-        ]) || 1,
+          value(panel, [
+            "length",
+            "length_mm",
+            "lengthMm",
+            "lengthMM",
+          ]),
 
-        getPanelStatus(panel) ||
-          "Packed",
-      ]);
-    });
+          value(panel, [
+            "width",
+            "width_mm",
+            "widthMm",
+            "widthMM",
+          ]),
 
-    const escapeHtml = (text) => {
-      return String(text ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
+          value(panel, [
+            "quantity",
+            "qty",
+          ]) || 1,
+
+          getPanelStatus(
+            panel
+          ) || "Packed",
+        ]);
+      }
+    );
+
+    // -------------------------------------------------------
+    // ESCAPE
+    // -------------------------------------------------------
+
+    const escapeHtml = (
+      text
+    ) => {
+      return String(
+        text ?? ""
+      )
+        .replace(
+          /&/g,
+          "&amp;"
+        )
+        .replace(
+          /</g,
+          "&lt;"
+        )
+        .replace(
+          />/g,
+          "&gt;"
+        )
+        .replace(
+          /"/g,
+          "&quot;"
+        )
+        .replace(
+          /'/g,
+          "&#039;"
+        );
     };
+
+    // -------------------------------------------------------
+    // TABLE
+    // -------------------------------------------------------
 
     let table = `
       <html>
       <head>
         <meta charset="UTF-8" />
       </head>
+
       <body>
         <table border="1">
     `;
 
-    rows.forEach((row, index) => {
-      table += "<tr>";
+    rows.forEach(
+      (
+        row,
+        index
+      ) => {
+        table += "<tr>";
 
-      row.forEach((cell) => {
-        table +=
-          index === 0
-            ? `<th>${escapeHtml(
-                cell
-              )}</th>`
-            : `<td>${escapeHtml(
-                cell
-              )}</td>`;
-      });
+        row.forEach(
+          (cell) => {
+            table +=
+              index === 0
+                ? `<th>${escapeHtml(
+                    cell
+                  )}</th>`
+                : `<td>${escapeHtml(
+                    cell
+                  )}</td>`;
+          }
+        );
 
-      table += "</tr>";
-    });
+        table += "</tr>";
+      }
+    );
 
     table += `
         </table>
@@ -595,49 +991,107 @@ function Production() {
       </html>
     `;
 
-    const blob = new Blob(
-      [table],
-      {
-        type: "application/vnd.ms-excel",
-      }
-    );
+    // -------------------------------------------------------
+    // DOWNLOAD
+    // -------------------------------------------------------
+
+    const blob =
+      new Blob(
+        [table],
+        {
+          type:
+            "application/vnd.ms-excel",
+        }
+      );
 
     const url =
-      window.URL.createObjectURL(blob);
+      window.URL.createObjectURL(
+        blob
+      );
 
     const link =
-      document.createElement("a");
+      document.createElement(
+        "a"
+      );
 
     link.href = url;
 
     const safeSiteName =
-      getSiteName(selectedSite)
-        .replace(
-          /[^a-z0-9]/gi,
-          "_"
-        );
+      getSiteName(
+        selectedSite
+      ).replace(
+        /[^a-z0-9]/gi,
+        "_"
+      );
 
     const safePacket =
-      String(packet)
-        .replace(
-          /[^a-z0-9]/gi,
-          "_"
-        );
+      String(
+        packet
+      ).replace(
+        /[^a-z0-9]/gi,
+        "_"
+      );
 
     link.download =
       `${safeSiteName}_Packet_${safePacket}.xls`;
 
-    document.body.appendChild(link);
+    document.body.appendChild(
+      link
+    );
 
     link.click();
 
-    document.body.removeChild(link);
+    document.body.removeChild(
+      link
+    );
 
-    window.URL.revokeObjectURL(url);
+    window.URL.revokeObjectURL(
+      url
+    );
   };
 
   // =========================================================
-  // UI
+  // LOADING SCREEN
+  // =========================================================
+
+  if (loading) {
+    return (
+      <div
+        style={{
+          width: "100%",
+          padding: "50px",
+          boxSizing: "border-box",
+          textAlign: "center",
+        }}
+      >
+        <div
+          style={{
+            fontSize: "30px",
+            marginBottom: "10px",
+          }}
+        >
+          ⟳
+        </div>
+
+        <strong>
+          Loading Production data...
+        </strong>
+
+        <p
+          style={{
+            color: "#6b7280",
+            fontSize: "13px",
+          }}
+        >
+          Reading sites and panels
+          from Supabase.
+        </p>
+      </div>
+    );
+  }
+
+  // =========================================================
+  // MAIN UI
   // =========================================================
 
   return (
@@ -661,24 +1115,50 @@ function Production() {
           </h2>
 
           <p className="subtitle">
-            Export packed panel data by site
-            and packet.
+            Export packed panel data by
+            site and packet.
           </p>
         </div>
       </header>
 
       {/* =====================================================
-          MAIN REPORT PANEL
+          SUPABASE ERROR
+      ===================================================== */}
+
+      {error && (
+        <div
+          style={{
+            marginBottom: "12px",
+            padding: "12px 15px",
+            background: "#fef2f2",
+            border:
+              "1px solid #fecaca",
+            color: "#b91c1c",
+            borderRadius: "8px",
+            fontSize: "13px",
+            fontWeight: "600",
+          }}
+        >
+          Production data error:{" "}
+          {error}
+        </div>
+      )}
+
+      {/* =====================================================
+          MAIN PANEL
       ===================================================== */}
 
       <section
         className="panel"
         style={{
           width: "100%",
-          boxSizing: "border-box",
+          boxSizing:
+            "border-box",
         }}
       >
-        {/* SITE SELECTOR */}
+        {/* ===================================================
+            SITE SELECTOR
+        =================================================== */}
 
         <div
           style={{
@@ -700,58 +1180,118 @@ function Production() {
           </label>
 
           <select
-            value={selectedSiteId}
-            onChange={(event) =>
+            value={
+              selectedSiteId
+            }
+            onChange={(
+              event
+            ) =>
               setSelectedSiteId(
-                event.target.value
+                event.target
+                  .value
               )
             }
             style={{
               width: "100%",
-              maxWidth: "500px",
-              padding: "11px 13px",
+              maxWidth:
+                "500px",
+              padding:
+                "11px 13px",
               border:
                 "1px solid #d1d5db",
-              borderRadius: "8px",
-              background: "#ffffff",
-              fontSize: "14px",
-              outline: "none",
+              borderRadius:
+                "8px",
+              background:
+                "#ffffff",
+              fontSize:
+                "14px",
+              outline:
+                "none",
             }}
           >
             <option value="">
               Select a site
             </option>
 
-            {sites.map((site) => (
-              <option
-                key={site.id}
-                value={site.id}
-              >
-                {getSiteName(site)}
-                {site.clientName
-                  ? ` — ${site.clientName}`
-                  : ""}
-              </option>
-            ))}
+            {sites.map(
+              (site) => (
+                <option
+                  key={
+                    site.id
+                  }
+                  value={
+                    site.id
+                  }
+                >
+                  {getSiteName(
+                    site
+                  )}
+
+                  {getClientName(
+                    site
+                  ) &&
+                    getClientName(
+                      site
+                    ) !==
+                      "Client"
+                    ? ` — ${getClientName(
+                        site
+                      )}`
+                    : ""}
+                </option>
+              )
+            )}
           </select>
+
+          {/* DATA SOURCE INDICATOR */}
+
+          <div
+            style={{
+              marginTop:
+                "8px",
+              fontSize:
+                "11px",
+              color:
+                "#6b7280",
+            }}
+          >
+            ✓ Data source:
+            Supabase
+            <span
+              style={{
+                marginLeft:
+                  "10px",
+              }}
+            >
+              {sites.length}{" "}
+              sites •{" "}
+              {panels.length}{" "}
+              panels
+            </span>
+          </div>
         </div>
 
         {/* ===================================================
-            NO SITE SELECTED
+            NO SITE
         =================================================== */}
 
         {!selectedSite && (
           <div
             style={{
-              padding: "60px 20px",
-              textAlign: "center",
-              color: "#6b7280",
+              padding:
+                "60px 20px",
+              textAlign:
+                "center",
+              color:
+                "#6b7280",
             }}
           >
             <div
               style={{
-                fontSize: "40px",
-                marginBottom: "12px",
+                fontSize:
+                  "40px",
+                marginBottom:
+                  "12px",
               }}
             >
               ▥
@@ -761,10 +1301,14 @@ function Production() {
               style={{
                 margin:
                   "0 0 8px",
-                color: "#374151",
+                color:
+                  "#374151",
               }}
             >
-              Select a site
+              {sites.length ===
+              0
+                ? "No sites found"
+                : "Select a site"}
             </h3>
 
             <p
@@ -772,8 +1316,10 @@ function Production() {
                 margin: 0,
               }}
             >
-              Select a site above to view
-              packed panels and export reports.
+              {sites.length ===
+              0
+                ? "No sites are currently available in Supabase."
+                : "Select a site above to view packed panels and export reports."}
             </p>
           </div>
         )}
@@ -785,20 +1331,28 @@ function Production() {
         {selectedSite && (
           <div
             style={{
-              padding: "22px",
+              padding:
+                "22px",
             }}
           >
-            {/* SITE SUMMARY */}
+            {/* =================================================
+                SITE SUMMARY
+            ================================================= */}
 
             <div
               style={{
-                display: "flex",
-                alignItems: "center",
+                display:
+                  "flex",
+                alignItems:
+                  "center",
                 justifyContent:
                   "space-between",
-                gap: "15px",
-                flexWrap: "wrap",
-                marginBottom: "22px",
+                gap:
+                  "15px",
+                flexWrap:
+                  "wrap",
+                marginBottom:
+                  "22px",
               }}
             >
               <div>
@@ -816,17 +1370,42 @@ function Production() {
                 <p
                   style={{
                     margin: 0,
-                    color: "#6b7280",
-                    fontSize: "14px",
+                    color:
+                      "#6b7280",
+                    fontSize:
+                      "14px",
                   }}
                 >
-                  {packedPanels.length} packed
-                  panels in{" "}
-                  {packetGroups.length} packets
+                  Client:{" "}
+                  {getClientName(
+                    selectedSite
+                  )}
+                </p>
+
+                <p
+                  style={{
+                    margin:
+                      "4px 0 0",
+                    color:
+                      "#6b7280",
+                    fontSize:
+                      "13px",
+                  }}
+                >
+                  {sitePanels.length}{" "}
+                  total panels •{" "}
+                  {
+                    packedPanels.length
+                  }{" "}
+                  packed panels •{" "}
+                  {
+                    packetGroups.length
+                  }{" "}
+                  packets
                 </p>
               </div>
 
-              {/* MAIN EXCEL BUTTON */}
+              {/* MAIN EXCEL */}
 
               <button
                 onClick={
@@ -837,17 +1416,21 @@ function Production() {
                   0
                 }
                 style={{
-                  border: "none",
+                  border:
+                    "none",
                   background:
                     packedPanels.length >
                     0
                       ? "#16a34a"
                       : "#9ca3af",
-                  color: "#ffffff",
-                  borderRadius: "8px",
+                  color:
+                    "#ffffff",
+                  borderRadius:
+                    "8px",
                   padding:
                     "11px 16px",
-                  fontWeight: "700",
+                  fontWeight:
+                    "700",
                   cursor:
                     packedPanels.length >
                     0
@@ -867,18 +1450,24 @@ function Production() {
               0 && (
               <div
                 style={{
-                  padding: "45px 20px",
-                  textAlign: "center",
+                  padding:
+                    "45px 20px",
+                  textAlign:
+                    "center",
                   border:
                     "1px dashed #d1d5db",
-                  borderRadius: "10px",
-                  color: "#6b7280",
+                  borderRadius:
+                    "10px",
+                  color:
+                    "#6b7280",
                 }}
               >
                 <div
                   style={{
-                    fontSize: "36px",
-                    marginBottom: "10px",
+                    fontSize:
+                      "36px",
+                    marginBottom:
+                      "10px",
                   }}
                 >
                   ✓
@@ -886,9 +1475,12 @@ function Production() {
 
                 <strong
                   style={{
-                    display: "block",
-                    color: "#374151",
-                    marginBottom: "5px",
+                    display:
+                      "block",
+                    color:
+                      "#374151",
+                    marginBottom:
+                      "5px",
                   }}
                 >
                   No packed panels
@@ -896,12 +1488,15 @@ function Production() {
 
                 <span
                   style={{
-                    fontSize: "14px",
+                    fontSize:
+                      "14px",
                   }}
                 >
-                  Packed panels will appear
-                  here automatically after QR
-                  tracking.
+                  Packed panels will
+                  appear here
+                  automatically
+                  after QR Tracking
+                  updates Supabase.
                 </span>
               </div>
             )}
@@ -915,19 +1510,24 @@ function Production() {
               <div>
                 <div
                   style={{
-                    display: "grid",
+                    display:
+                      "grid",
                     gridTemplateColumns:
                       "1fr 120px 160px",
-                    gap: "15px",
+                    gap:
+                      "15px",
                     padding:
                       "11px 14px",
                     background:
                       "#f3f4f6",
                     borderRadius:
                       "8px",
-                    fontSize: "12px",
-                    fontWeight: "700",
-                    color: "#6b7280",
+                    fontSize:
+                      "12px",
+                    fontWeight:
+                      "700",
+                    color:
+                      "#6b7280",
                   }}
                 >
                   <span>
@@ -950,12 +1550,16 @@ function Production() {
                       packetPanels,
                   }) => (
                     <div
-                      key={packet}
+                      key={
+                        packet
+                      }
                       style={{
-                        display: "grid",
+                        display:
+                          "grid",
                         gridTemplateColumns:
                           "1fr 120px 160px",
-                        gap: "15px",
+                        gap:
+                          "15px",
                         alignItems:
                           "center",
                         padding:
@@ -967,7 +1571,9 @@ function Production() {
                       <div>
                         <strong>
                           Packet{" "}
-                          {packet}
+                          {
+                            packet
+                          }
                         </strong>
                       </div>
 
@@ -977,6 +1583,7 @@ function Production() {
                             packetPanels.length
                           }
                         </strong>
+
                         <span
                           style={{
                             color:
