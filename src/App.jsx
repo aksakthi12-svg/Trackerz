@@ -7,6 +7,7 @@ import Login from "./Login";
 import Projects from "./pages/Projects";
 import QRTracking from "./QRTracking";
 import Production from "./Production";
+import Dispatch from "./Dispatch";
 
 import "./App.css";
 
@@ -16,32 +17,30 @@ TRACKERZ
 FACTORY TRACKING APPLICATION
 =========================================================
 
-This App.jsx keeps:
-
+PRESERVED:
 - Supabase authentication
 - Supabase sites table
 - Supabase panels table
-- RLS protected database access
-- Dashboard
-- Sites
-- Site details
-- Excel cutlist import
-- QR Data
-- Panel packing status
-- Pack / Unpack
-- Site deletion
-- Progress tracking
-- Delivered sites
-- Existing Cutlist Import page
-- Existing QR Tracking page
-- Existing Production page
-- Existing Projects page
+- RLS-compatible queries
+- Dashboard data loading
+- Cutlist Import
+- Site-name QR generation
+- QR Tracking
+- Production
 - Reports
-- Settings
+- Sites
+- Existing navigation
+- Existing packet/scanner functionality through QRTracking.jsx
+
+CUTLIST WORKFLOW:
+1. New Site
+2. Upload Cutlist
+3. Preview
+4. Release to Production
+5. Download QR Cutlist
 
 IMPORTANT:
-Supabase is the source of truth.
-We are NOT using localStorage for production data.
+Supabase remains the source of truth.
 =========================================================
 */
 
@@ -54,14 +53,17 @@ function App() {
   const [loadingAuth, setLoadingAuth] = useState(true);
 
   /* ======================================================
-     APP NAVIGATION
+     NAVIGATION
   ====================================================== */
 
   const [activePage, setActivePage] = useState("dashboard");
-
   const [selectedSite, setSelectedSite] = useState(null);
 
-  const [dashboardView, setDashboardView] = useState("progress");
+  /* ======================================================
+     DASHBOARD TABS
+  ====================================================== */
+
+  const [dashboardTab, setDashboardTab] = useState("progress");
 
   /* ======================================================
      DATABASE DATA
@@ -69,7 +71,6 @@ function App() {
 
   const [sites, setSites] = useState([]);
   const [panels, setPanels] = useState([]);
-
   const [loadingData, setLoadingData] = useState(false);
 
   /* ======================================================
@@ -94,11 +95,10 @@ function App() {
   });
 
   /* ======================================================
-     IMPORT CUTLIST
+     CUTLIST IMPORT
   ====================================================== */
 
   const [showImport, setShowImport] = useState(false);
-
   const [importFile, setImportFile] = useState(null);
   const [importRows, setImportRows] = useState([]);
   const [importing, setImporting] = useState(false);
@@ -161,7 +161,7 @@ function App() {
   }, []);
 
   /* ======================================================
-     LOAD ALL TRACKERZ DATA
+     LOAD SITES + PANELS
   ====================================================== */
 
   useEffect(() => {
@@ -175,11 +175,7 @@ function App() {
     setError("");
 
     try {
-      /*
-      -----------------------------------------------------
-      LOAD SITES
-      -----------------------------------------------------
-      */
+      /* LOAD SITES */
 
       const {
         data: sitesData,
@@ -192,16 +188,10 @@ function App() {
         });
 
       if (sitesError) {
-  throw sitesError;
-}
+        throw sitesError;
+      }
 
-console.log("SUPABASE SITES:", sitesData);
-
-      /*
-      -----------------------------------------------------
-      LOAD PANELS
-      -----------------------------------------------------
-      */
+      /* LOAD PANELS */
 
       const {
         data: panelsData,
@@ -220,11 +210,7 @@ console.log("SUPABASE SITES:", sitesData);
       setSites(sitesData || []);
       setPanels(panelsData || []);
 
-      /*
-      -----------------------------------------------------
-      KEEP SELECTED SITE UPDATED
-      -----------------------------------------------------
-      */
+      /* KEEP SELECTED SITE UPDATED */
 
       if (selectedSite) {
         const updatedSelectedSite =
@@ -235,7 +221,9 @@ console.log("SUPABASE SITES:", sitesData);
           );
 
         if (updatedSelectedSite) {
-          setSelectedSite(updatedSelectedSite);
+          setSelectedSite(
+            updatedSelectedSite
+          );
         }
       }
     } catch (err) {
@@ -289,66 +277,6 @@ console.log("SUPABASE SITES:", sitesData);
   }
 
   /* ======================================================
-     DASHBOARD STATISTICS
-  ====================================================== */
-
-  const totalSites = sites.length;
-
-  const activeSites = sites.filter(
-    (site) =>
-      String(site.status || "")
-        .trim()
-        .toLowerCase() === "active"
-  ).length;
-
-  const totalPanels = panels.reduce(
-    (sum, panel) => {
-      const quantity = Number(
-        panel.quantity || 1
-      );
-
-      return (
-        sum +
-        (Number.isFinite(quantity)
-          ? quantity
-          : 1)
-      );
-    },
-    0
-  );
-
-  const packedPanels = panels.reduce(
-    (sum, panel) => {
-      const quantity = Number(
-        panel.quantity || 1
-      );
-
-      const packed =
-        panel.packed === true ||
-        String(panel.status || "")
-          .trim()
-          .toLowerCase() === "packed";
-
-      return (
-        sum +
-        (packed
-          ? Number.isFinite(quantity)
-            ? quantity
-            : 1
-          : 0)
-      );
-    },
-    0
-  );
-
-  const qrReadyPanels = panels.filter(
-    (panel) =>
-      panel.qr_data ||
-      panel.qr_code ||
-      panel.panel_code
-  ).length;
-
-  /* ======================================================
      PANEL HELPERS
   ====================================================== */
 
@@ -358,10 +286,6 @@ console.log("SUPABASE SITES:", sitesData);
     }
 
     return panels.filter((panel) => {
-      /*
-      Prefer site_id.
-      */
-
       if (
         panel.site_id !== undefined &&
         panel.site_id !== null
@@ -371,10 +295,6 @@ console.log("SUPABASE SITES:", sitesData);
           String(site.id)
         );
       }
-
-      /*
-      Fallback to site_name for older imported data.
-      */
 
       if (panel.site_name) {
         return (
@@ -398,9 +318,10 @@ console.log("SUPABASE SITES:", sitesData);
     if (sitePanels.length > 0) {
       return sitePanels.reduce(
         (sum, panel) => {
-          const quantity = Number(
-            panel.quantity || 1
-          );
+          const quantity =
+            Number(
+              panel.quantity || 1
+            );
 
           return (
             sum +
@@ -435,9 +356,10 @@ console.log("SUPABASE SITES:", sitesData);
       sitePanels.length > 0
         ? sitePanels.reduce(
             (sum, panel) => {
-              const quantity = Number(
-                panel.quantity || 1
-              );
+              const quantity =
+                Number(
+                  panel.quantity || 1
+                );
 
               return (
                 sum +
@@ -459,9 +381,10 @@ console.log("SUPABASE SITES:", sitesData);
             return sum;
           }
 
-          const quantity = Number(
-            panel.quantity || 1
-          );
+          const quantity =
+            Number(
+              panel.quantity || 1
+            );
 
           return (
             sum +
@@ -496,16 +419,13 @@ console.log("SUPABASE SITES:", sitesData);
     };
   }
 
-  /* ======================================================
-     DELIVERED SITE CHECK
-  ====================================================== */
-
   function isSiteDelivered(site) {
-    const status = String(
-      site?.status || ""
-    )
-      .trim()
-      .toLowerCase();
+    const status =
+      String(
+        site?.status || ""
+      )
+        .trim()
+        .toLowerCase();
 
     return (
       status === "delivered" ||
@@ -514,18 +434,52 @@ console.log("SUPABASE SITES:", sitesData);
     );
   }
 
-  const progressSites = sites.filter(
-    (site) =>
-      !isSiteDelivered(site)
-  );
+  /* ======================================================
+     DASHBOARD DATA
+  ====================================================== */
 
-  const deliveredSites = sites.filter(
-    (site) =>
-      isSiteDelivered(site)
-  );
+  const dashboardSiteData = useMemo(() => {
+    return sites.map((site) => {
+      const progress =
+        getSiteProgress(site);
+
+      return {
+        ...site,
+        progress,
+        delivered:
+          isSiteDelivered(site),
+      };
+    });
+  }, [sites, panels]);
+
+  const progressSites =
+    dashboardSiteData.filter(
+      (site) =>
+        !site.delivered &&
+        site.progress.percentage < 100
+    );
+
+  const packedSites =
+    dashboardSiteData.filter(
+      (site) =>
+        !site.delivered &&
+        site.progress.percentage === 100
+    );
+
+  const dispatchedSites =
+    dashboardSiteData.filter(
+      (site) => site.delivered
+    );
+
+  const dashboardSites =
+    dashboardTab === "packed"
+      ? packedSites
+      : dashboardTab === "dispatched"
+        ? dispatchedSites
+        : progressSites;
 
   /* ======================================================
-     CREATE NEW SITE
+     CREATE SITE
   ====================================================== */
 
   async function createSite(event) {
@@ -587,10 +541,6 @@ console.log("SUPABASE SITES:", sitesData);
 
       setShowAddSite(false);
 
-      /*
-      Open the newly created site.
-      */
-
       setSelectedSite(data);
       setActivePage("site");
 
@@ -608,6 +558,91 @@ console.log("SUPABASE SITES:", sitesData);
           "Unable to create site."
       );
     }
+  }
+
+  /* ======================================================
+     CREATE SITE FROM CUTLIST WORKFLOW
+  ====================================================== */
+
+  async function createSiteRecord({
+    site_name,
+    client_name,
+    contact,
+    address,
+  }) {
+    const cleanSiteName =
+      String(site_name || "").trim();
+
+    if (!cleanSiteName) {
+      throw new Error(
+        "Please enter a site name."
+      );
+    }
+
+    const {
+      data: existingSite,
+      error: existingSiteError,
+    } = await supabase
+      .from("sites")
+      .select("id, site_name")
+      .ilike(
+        "site_name",
+        cleanSiteName
+      )
+      .limit(1);
+
+    if (existingSiteError) {
+      throw existingSiteError;
+    }
+
+    if (
+      existingSite &&
+      existingSite.length > 0
+    ) {
+      throw new Error(
+        `Site "${cleanSiteName}" already exists. Use the existing site from the Sites page instead of creating a duplicate.`
+      );
+    }
+
+    const {
+      data,
+      error: createError,
+    } = await supabase
+      .from("sites")
+      .insert([
+        {
+          site_name: cleanSiteName,
+          client_name:
+            String(
+              client_name || ""
+            ).trim(),
+          contact:
+            String(
+              contact || ""
+            ).trim(),
+          address:
+            String(
+              address || ""
+            ).trim(),
+          panel_count: 0,
+          status: "Active",
+        },
+      ])
+      .select()
+      .single();
+
+    if (createError) {
+      throw createError;
+    }
+
+    setSites((previous) => [
+      data,
+      ...previous,
+    ]);
+
+    setSelectedSite(data);
+
+    return data;
   }
 
   /* ======================================================
@@ -686,7 +721,7 @@ console.log("SUPABASE SITES:", sitesData);
   }
 
   /* ======================================================
-     EXCEL COLUMN HELPERS
+     EXCEL HELPERS
   ====================================================== */
 
   function findColumn(
@@ -761,11 +796,22 @@ console.log("SUPABASE SITES:", sitesData);
   }
 
   /* ======================================================
-     IMPORT CUTLIST INTO SUPABASE
+     IMPORT CUTLIST
   ====================================================== */
 
-  async function importCutlist() {
-    if (!selectedSite) {
+  async function importCutlist(
+    siteOverride = null,
+    options = {}
+  ) {
+    const activeSite =
+      siteOverride ||
+      selectedSite;
+
+    const {
+      keepPreview = false,
+    } = options;
+
+    if (!activeSite) {
       setError(
         "Please select a site first."
       );
@@ -784,20 +830,11 @@ console.log("SUPABASE SITES:", sitesData);
     setMessage("");
 
     try {
-      /*
-      -----------------------------------------------------
-      CREATE PANEL RECORDS
-      -----------------------------------------------------
-      */
+      /* PREPARE PANEL ROWS */
 
       const rowsToInsert =
         importRows.map(
           (row, index) => {
-            /*
-            Exact Trackerz / Anna Nagar columns
-            are supported first.
-            */
-
             const assemblyLabel =
               valueFromRow(row, [
                 "Assembly Label",
@@ -849,11 +886,6 @@ console.log("SUPABASE SITES:", sitesData);
                 "Remark",
                 "remark",
               ]);
-
-            /*
-            Use Assembly Label as the main panel name
-            when available.
-            */
 
             const panelName =
               assemblyLabel ||
@@ -910,17 +942,11 @@ console.log("SUPABASE SITES:", sitesData);
                 ? 1
                 : quantityValue;
 
-            /*
-            Preserve existing QR Data if the Excel
-            already contains it.
-
-            Otherwise create:
-            TRK-SITENAME-0001
-            */
+            /* QR DATA */
 
             const cleanSiteName =
               String(
-                selectedSite.site_name
+                activeSite.site_name
               )
                 .trim()
                 .replace(
@@ -934,26 +960,16 @@ console.log("SUPABASE SITES:", sitesData);
                 .toUpperCase();
 
             const qrData =
-  `TRK-${cleanSiteName}-${String(
-    index + 1
-  ).padStart(4, "0")}`;
-
-            /*
-            IMPORTANT:
-
-            We only insert columns that belong to
-            the Panels table we created.
-
-            Extra Excel columns remain represented
-            through panel_name / QR / site data.
-            */
+              `TRK-${cleanSiteName}-${String(
+                index + 1
+              ).padStart(4, "0")}`;
 
             return {
               site_id:
-                selectedSite.id,
+                activeSite.id,
 
               site_name:
-                selectedSite.site_name,
+                activeSite.site_name,
 
               panel_name:
                 String(panelName),
@@ -979,14 +995,6 @@ console.log("SUPABASE SITES:", sitesData);
               qr_data:
                 String(qrData),
 
-              /*
-              These are included only if your current
-              Panels table contains them.
-
-              If your table does not contain these
-              columns, remove them before importing.
-              */
-
               assembly_label:
                 assemblyLabel || null,
 
@@ -1011,39 +1019,11 @@ console.log("SUPABASE SITES:", sitesData);
           }
         );
 
-      /*
-      -----------------------------------------------------
-      IMPORTANT SAFETY CHECK
-      -----------------------------------------------------
-
-      The current Panels table was originally created
-      around the core columns:
-
-      site_id
-      site_name
-      panel_name
-      length_num
-      width_num
-      thickness_num
-      quantity
-      status
-      packed
-      qr_data
-      created_at
-
-      Therefore we attempt the full record first.
-
-      If Supabase rejects optional descriptive columns,
-      we retry with the core structure.
-      */
-
       let insertedTotal = 0;
 
       const batchSize = 100;
 
-      console.log("TRACKERZ PANEL INSERT START");
-      console.log("rowsToInsert count:", rowsToInsert.length);
-      console.log("first row:", rowsToInsert[0]);
+      /* FULL ROW INSERT */
 
       try {
         for (
@@ -1072,7 +1052,7 @@ console.log("SUPABASE SITES:", sitesData);
         }
       } catch (fullInsertError) {
         /*
-        Retry using the original core structure.
+        FALLBACK TO CORE PANELS STRUCTURE
         */
 
         console.warn(
@@ -1083,39 +1063,39 @@ console.log("SUPABASE SITES:", sitesData);
         insertedTotal = 0;
 
         const coreRows =
-  rowsToInsert.map(
-    (panel) => ({
-      site_id:
-        panel.site_id,
+          rowsToInsert.map(
+            (panel) => ({
+              site_id:
+                panel.site_id,
 
-      site_name:
-        panel.site_name,
+              site_name:
+                panel.site_name,
 
-      qr_data:
-        panel.qr_data,
+              panel_name:
+                panel.panel_name,
 
-      panel_name:
-        panel.panel_name,
+              length_num:
+                panel.length_num,
 
-      length:
-        panel.length_num,
+              width_num:
+                panel.width_num,
 
-      width:
-        panel.width_num,
+              thickness_num:
+                panel.thickness_num,
 
-      thickness:
-        panel.thickness_num,
+              quantity:
+                panel.quantity,
 
-      quantity:
-        panel.quantity,
+              status:
+                panel.status,
 
-      status:
-        panel.status,
+              packed:
+                panel.packed,
 
-      packed:
-        panel.packed,
-    })
-  );
+              qr_data:
+                panel.qr_data,
+            })
+          );
 
         for (
           let i = 0;
@@ -1143,11 +1123,7 @@ console.log("SUPABASE SITES:", sitesData);
         }
       }
 
-      /*
-      -----------------------------------------------------
-      UPDATE SITE PANEL COUNT
-      -----------------------------------------------------
-      */
+      /* UPDATE SITE PANEL COUNT */
 
       const importedQuantity =
         rowsToInsert.reduce(
@@ -1161,7 +1137,7 @@ console.log("SUPABASE SITES:", sitesData);
 
       const currentSitePanelCount =
         getSitePanelCount(
-          selectedSite
+          activeSite
         );
 
       const newPanelCount =
@@ -1179,7 +1155,7 @@ console.log("SUPABASE SITES:", sitesData);
         })
         .eq(
           "id",
-          selectedSite.id
+          activeSite.id
         )
         .select()
         .single();
@@ -1188,16 +1164,12 @@ console.log("SUPABASE SITES:", sitesData);
         throw siteUpdateError;
       }
 
-      /*
-      -----------------------------------------------------
-      UPDATE LOCAL STATE
-      -----------------------------------------------------
-      */
+      /* UPDATE LOCAL STATE */
 
       setSites((previous) =>
         previous.map((site) =>
           String(site.id) ===
-          String(selectedSite.id)
+          String(activeSite.id)
             ? updatedSite
             : site
         )
@@ -1207,22 +1179,25 @@ console.log("SUPABASE SITES:", sitesData);
         updatedSite
       );
 
-      /*
-      -----------------------------------------------------
-      RESET IMPORT
-      -----------------------------------------------------
-      */
+      /* RESET ONLY WHEN NOT KEEPING PREVIEW */
 
-      setImportRows([]);
-      setImportFile(null);
-      setShowImport(false);
+      if (!keepPreview) {
+        setImportRows([]);
+        setImportFile(null);
+        setShowImport(false);
+      }
 
       await loadAllData();
 
-     setMessage(
-  String(insertedTotal) +
-    " cutlist rows imported successfully."
-);
+      setMessage(
+        `${insertedTotal} cutlist rows imported successfully.`
+      );
+
+      return {
+        success: true,
+        insertedTotal,
+        site: updatedSite,
+      };
     } catch (err) {
       console.error(
         "Import cutlist error:",
@@ -1233,13 +1208,15 @@ console.log("SUPABASE SITES:", sitesData);
         err.message ||
           "Unable to import the cutlist. Please check the Panels table columns."
       );
+
+      throw err;
     } finally {
       setImporting(false);
     }
   }
 
   /* ======================================================
-     PACK / UNPACK PANEL
+     PACK / UNPACK
   ====================================================== */
 
   async function togglePacked(panel) {
@@ -1322,12 +1299,6 @@ console.log("SUPABASE SITES:", sitesData);
       site.site_name ||
       "this site";
 
-    /*
-    IMPORTANT:
-    This is the corrected syntax that avoids the
-    previous Vite error.
-    */
-
     const confirmed =
       window.confirm(
         `Delete "${siteName}"?\n\nThis will permanently delete the site and all panels belonging to it.`
@@ -1341,12 +1312,6 @@ console.log("SUPABASE SITES:", sitesData);
     setMessage("");
 
     try {
-      /*
-      -----------------------------------------------------
-      DELETE PANELS FIRST
-      -----------------------------------------------------
-      */
-
       const {
         error: panelDeleteError,
       } = await supabase
@@ -1361,12 +1326,6 @@ console.log("SUPABASE SITES:", sitesData);
         throw panelDeleteError;
       }
 
-      /*
-      -----------------------------------------------------
-      DELETE SITE
-      -----------------------------------------------------
-      */
-
       const {
         error: siteDeleteError,
       } = await supabase
@@ -1380,12 +1339,6 @@ console.log("SUPABASE SITES:", sitesData);
       if (siteDeleteError) {
         throw siteDeleteError;
       }
-
-      /*
-      -----------------------------------------------------
-      UPDATE UI
-      -----------------------------------------------------
-      */
 
       setSites((previous) =>
         previous.filter(
@@ -1512,13 +1465,16 @@ console.log("SUPABASE SITES:", sitesData);
     setMessage("");
   }
 
+  /* ======================================================
+     SIDEBAR
+  ====================================================== */
+
   function renderNavigation() {
     return (
       <aside className="sidebar">
 
-        {/* BRAND */}
-
         <div className="logo">
+
           <div className="logo-mark">
             T
           </div>
@@ -1532,13 +1488,10 @@ console.log("SUPABASE SITES:", sitesData);
               Panel Production System
             </span>
           </div>
+
         </div>
 
-        {/* NAVIGATION */}
-
         <nav>
-
-          {/* DASHBOARD */}
 
           <button
             className={`nav-item ${
@@ -1557,8 +1510,6 @@ console.log("SUPABASE SITES:", sitesData);
             Dashboard
           </button>
 
-          {/* CUTLIST */}
-
           <button
             className={`nav-item ${
               activePage ===
@@ -1576,8 +1527,6 @@ console.log("SUPABASE SITES:", sitesData);
             Cutlist Import
           </button>
 
-          {/* QR TRACKING */}
-
           <button
             className={`nav-item ${
               activePage ===
@@ -1592,27 +1541,6 @@ console.log("SUPABASE SITES:", sitesData);
             <span>⌗</span>
             QR Tracking
           </button>
-
-          {/* PRODUCTION */}
-
-          <button
-            className={`nav-item ${
-              activePage ===
-              "production"
-                ? "active"
-                : ""
-            }`}
-            onClick={() =>
-              navigateTo(
-                "production"
-              )
-            }
-          >
-            <span>✓</span>
-            Production
-          </button>
-
-          {/* REPORTS */}
 
           <button
             className={`nav-item ${
@@ -1631,7 +1559,22 @@ console.log("SUPABASE SITES:", sitesData);
             Reports
           </button>
 
-          {/* SITES */}
+          <button
+            className={`nav-item ${
+              activePage ===
+              "dispatch"
+                ? "active"
+                : ""
+            }`}
+            onClick={() =>
+              navigateTo(
+                "dispatch"
+              )
+            }
+          >
+            <span>⇢</span>
+            Dispatch
+          </button>
 
           <button
             className={`nav-item ${
@@ -1652,11 +1595,7 @@ console.log("SUPABASE SITES:", sitesData);
 
         </nav>
 
-        {/* BOTTOM */}
-
         <div className="sidebar-bottom">
-
-          {/* SETTINGS */}
 
           <button
             className={`nav-item ${
@@ -1674,8 +1613,6 @@ console.log("SUPABASE SITES:", sitesData);
             <span>⚙</span>
             Settings
           </button>
-
-          {/* USER */}
 
           <div className="user">
 
@@ -1702,8 +1639,6 @@ console.log("SUPABASE SITES:", sitesData);
             </div>
 
           </div>
-
-          {/* SIGN OUT */}
 
           <button
             onClick={
@@ -1739,354 +1674,311 @@ console.log("SUPABASE SITES:", sitesData);
   }
 
   /* ======================================================
-     DASHBOARD EMPTY STATE
-  ====================================================== */
-
-  function renderDashboardEmptyState() {
-    const isProgress =
-      dashboardView ===
-      "progress";
-
-    return (
-      <div
-        className="empty-card"
-        style={{
-          padding:
-            "50px 20px",
-          textAlign:
-            "center",
-          width:
-            "100%",
-          boxSizing:
-            "border-box",
-        }}
-      >
-
-        <div
-          className="empty-icon"
-          style={{
-            fontSize:
-              "42px",
-            marginBottom:
-              "12px",
-          }}
-        >
-          ▤
-        </div>
-
-        <h3>
-          {isProgress
-            ? "No progress sites"
-            : "No delivered sites"}
-        </h3>
-
-        <p>
-          {isProgress
-            ? "Imported production sites will appear here."
-            : "Sites marked as delivered will appear here."}
-        </p>
-
-      </div>
-    );
-  }
-
-  /* ======================================================
-     DASHBOARD SITE TABLE
-  ====================================================== */
-
-  function renderSiteTable(
-    siteList
-  ) {
-    if (
-      siteList.length === 0
-    ) {
-      return renderDashboardEmptyState();
-    }
-
-    const columns =
-      "2fr 1.4fr 0.9fr 1.5fr 1.2fr 0.8fr";
-
-    return (
-      <div
-        className="table"
-        style={{
-          width:
-            "100%",
-          minWidth:
-            "900px",
-        }}
-      >
-
-        {/* TABLE HEADER */}
-
-        <div
-          className="table-header"
-          style={{
-            display:
-              "grid",
-            gridTemplateColumns:
-              columns,
-            alignItems:
-              "center",
-            gap:
-              "12px",
-            width:
-              "100%",
-          }}
-        >
-
-          <span>
-            SITE
-          </span>
-
-          <span>
-            CLIENT
-          </span>
-
-          <span>
-            PANELS
-          </span>
-
-          <span>
-            PROGRESS
-          </span>
-
-          <span>
-            STATUS
-          </span>
-
-          <span>
-            DELETE
-          </span>
-
-        </div>
-
-        {/* TABLE ROWS */}
-
-        {siteList.map(
-          (site) => {
-            const progress =
-              getSiteProgress(
-                site
-              );
-
-            return (
-              <div
-                className="table-row"
-                key={site.id}
-                style={{
-                  display:
-                    "grid",
-                  gridTemplateColumns:
-                    columns,
-                  alignItems:
-                    "center",
-                  gap:
-                    "12px",
-                  width:
-                    "100%",
-                  minHeight:
-                    "70px",
-                  boxSizing:
-                    "border-box",
-                }}
-              >
-
-                {/* SITE */}
-
-                <div
-                  style={{
-                    minWidth:
-                      0,
-                  }}
-                >
-
-                  <strong
-                    style={{
-                      display:
-                        "block",
-                      whiteSpace:
-                        "nowrap",
-                      overflow:
-                        "hidden",
-                      textOverflow:
-                        "ellipsis",
-                    }}
-                  >
-                    {site.site_name ||
-                      "Unnamed Site"}
-                  </strong>
-
-                  <small
-                    style={{
-                      display:
-                        "block",
-                      whiteSpace:
-                        "nowrap",
-                      overflow:
-                        "hidden",
-                      textOverflow:
-                        "ellipsis",
-                    }}
-                  >
-                    Trackerz Production Site
-                  </small>
-
-                </div>
-
-                {/* CLIENT */}
-
-                <span
-                  style={{
-                    whiteSpace:
-                      "nowrap",
-                    overflow:
-                      "hidden",
-                    textOverflow:
-                      "ellipsis",
-                  }}
-                >
-                  {site.client_name ||
-                    "—"}
-                </span>
-
-                {/* PANELS */}
-
-                <div
-                  style={{
-                    whiteSpace:
-                      "nowrap",
-                  }}
-                >
-
-                  <strong>
-                    {progress.packed}{" "}
-                    /{" "}
-                    {progress.total}
-                  </strong>
-
-                  <small
-                    style={{
-                      display:
-                        "block",
-                    }}
-                  >
-                    {progress.balance}{" "}
-                    balance
-                  </small>
-
-                </div>
-
-                {/* PROGRESS */}
-
-                <div
-                  className="mini-progress"
-                  style={{
-                    minWidth:
-                      "120px",
-                  }}
-                >
-
-                  <div>
-                    <div
-                      className="mini-fill"
-                      style={{
-                        width:
-                          `${progress.percentage}%`,
-                      }}
-                    />
-                  </div>
-
-                  <span>
-                    {progress.percentage}%
-                  </span>
-
-                </div>
-
-                {/* STATUS */}
-
-                <span
-                  className={`status ${
-                    dashboardView ===
-                    "delivered"
-                      ? "completed-status"
-                      : "active-status"
-                  }`}
-                  style={{
-                    whiteSpace:
-                      "nowrap",
-                  }}
-                >
-                  {dashboardView ===
-                  "delivered"
-                    ? "Delivered"
-                    : progress.percentage ===
-                      100
-                    ? "Ready"
-                    : "In Production"}
-                </span>
-
-                {/* DELETE */}
-
-                <button
-                  onClick={() =>
-                    deleteSite(
-                      site
-                    )
-                  }
-                  style={{
-                    padding:
-                      "7px 10px",
-                    border:
-                      "1px solid #ef4444",
-                    background:
-                      "#ffffff",
-                    color:
-                      "#dc2626",
-                    borderRadius:
-                      "7px",
-                    cursor:
-                      "pointer",
-                    fontWeight:
-                      "600",
-                    whiteSpace:
-                      "nowrap",
-                    width:
-                      "fit-content",
-                  }}
-                >
-                  🗑 Delete
-                </button>
-
-              </div>
-            );
-          }
-        )}
-
-      </div>
-    );
-  }
-
-  /* ======================================================
      DASHBOARD
   ====================================================== */
 
+  function renderDashboardSiteProgress() {
+    if (dashboardSites.length === 0) {
+      return (
+        <div
+          style={{
+            padding: "50px 20px",
+            textAlign: "center",
+            color: "#6b7280",
+          }}
+        >
+          <div
+            style={{
+              fontSize: "38px",
+              marginBottom: "10px",
+            }}
+          >
+            {dashboardTab ===
+            "progress"
+              ? "▤"
+              : "✓"}
+          </div>
+
+          <h3
+            style={{
+              margin:
+                "0 0 8px",
+              color:
+                "#374151",
+            }}
+          >
+            {dashboardTab ===
+            "progress"
+              ? "No progress sites"
+              : dashboardTab ===
+                  "packed"
+                ? "No packed sites"
+                : "No dispatched sites"}
+          </h3>
+
+          <p
+            style={{
+              margin: 0,
+            }}
+          >
+            {dashboardTab ===
+            "progress"
+              ? "All current sites are either fully packed or dispatched."
+              : dashboardTab ===
+                  "packed"
+                ? "No site is fully packed yet."
+                : "No site has been marked as dispatched yet."}
+          </p>
+        </div>
+      );
+    }
+
+    return (
+      <div
+        style={{
+          width: "100%",
+          overflowX: "auto",
+        }}
+      >
+        <table
+          style={{
+            width: "100%",
+            minWidth: "850px",
+            borderCollapse:
+              "collapse",
+            background:
+              "#ffffff",
+          }}
+        >
+          <thead>
+            <tr
+              style={{
+                borderBottom:
+                  "1px solid #e5e7eb",
+                background:
+                  "#f8fafc",
+              }}
+            >
+              <th className="dashboard-th">
+                Site Name
+              </th>
+
+              <th className="dashboard-th">
+                Client Name
+              </th>
+
+              <th className="dashboard-th center">
+                Total Panels
+              </th>
+
+              <th className="dashboard-th center">
+                Packed
+              </th>
+
+              <th className="dashboard-th center">
+                Balance
+              </th>
+
+              <th className="dashboard-th center">
+                Production
+              </th>
+            </tr>
+          </thead>
+
+          <tbody>
+            {dashboardSites.map(
+              (site) => {
+                const progress =
+                  site.progress;
+
+                return (
+                  <tr
+                    key={site.id}
+                    style={{
+                      borderBottom:
+                        "1px solid #eef0f3",
+                    }}
+                  >
+                    <td
+                      style={{
+                        padding:
+                          "16px",
+                        fontWeight:
+                          "700",
+                        fontSize:
+                          "15px",
+                        color:
+                          "#111827",
+                      }}
+                    >
+                      {site.site_name ||
+                        "Unnamed Site"}
+                    </td>
+
+                    <td
+                      style={{
+                        padding:
+                          "16px",
+                        fontSize:
+                          "14px",
+                        color:
+                          "#4b5563",
+                      }}
+                    >
+                      {site.client_name ||
+                        "—"}
+                    </td>
+
+                    <td
+                      style={{
+                        padding:
+                          "16px",
+                        textAlign:
+                          "center",
+                        fontWeight:
+                          "700",
+                      }}
+                    >
+                      {progress.total}
+                    </td>
+
+                    <td
+                      style={{
+                        padding:
+                          "16px",
+                        textAlign:
+                          "center",
+                        fontWeight:
+                          "700",
+                        color:
+                          "#16a34a",
+                      }}
+                    >
+                      {progress.packed}
+                    </td>
+
+                    <td
+                      style={{
+                        padding:
+                          "16px",
+                        textAlign:
+                          "center",
+                        fontWeight:
+                          "700",
+                        color:
+                          progress.balance >
+                          0
+                            ? "#dc2626"
+                            : "#16a34a",
+                      }}
+                    >
+                      {progress.balance}
+                    </td>
+
+                    <td
+                      style={{
+                        padding:
+                          "16px",
+                        textAlign:
+                          "center",
+                        minWidth:
+                          "180px",
+                      }}
+                    >
+                      <div
+                        style={{
+                          display:
+                            "flex",
+                          alignItems:
+                            "center",
+                          gap: "10px",
+                        }}
+                      >
+                        <div
+                          style={{
+                            flex:
+                              "1",
+                            height:
+                              "8px",
+                            background:
+                              "#e5e7eb",
+                            borderRadius:
+                              "999px",
+                            overflow:
+                              "hidden",
+                          }}
+                        >
+                          <div
+                            style={{
+                              height:
+                                "100%",
+                              width: `${progress.percentage}%`,
+                              background:
+                                progress.percentage ===
+                                100
+                                  ? "#16a34a"
+                                  : "#2563eb",
+                              borderRadius:
+                                "999px",
+                            }}
+                          />
+                        </div>
+
+                        <strong
+                          style={{
+                            minWidth:
+                              "42px",
+                            fontSize:
+                              "14px",
+                          }}
+                        >
+                          {
+                            progress.percentage
+                          }
+                          %
+                        </strong>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              }
+            )}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
   function renderDashboard() {
-    const currentSites =
-      dashboardView ===
-      "progress"
-        ? progressSites
-        : deliveredSites;
+    const tabs = [
+      {
+        key: "progress",
+        label: "Progress Sites",
+        count:
+          progressSites.length,
+        icon: "▤",
+      },
+      {
+        key: "packed",
+        label: "Packed Sites",
+        count:
+          packedSites.length,
+        icon: "✓",
+      },
+      {
+        key: "dispatched",
+        label:
+          "Dispatched Sites",
+        count:
+          dispatchedSites.length,
+        icon: "✓",
+      },
+    ];
 
     return (
       <>
-
-        {/* DASHBOARD HEADER */}
-
         <header className="topbar">
-
           <div>
-
             <p className="eyebrow">
               TRACKERZ PRODUCTION
             </p>
@@ -2094,271 +1986,131 @@ console.log("SUPABASE SITES:", sitesData);
             <h2>
               Production Dashboard
             </h2>
-
-            <p className="subtitle">
-              Track production progress
-              and delivered sites.
-            </p>
-
           </div>
 
-          <div
-            style={{
-              display:
-                "flex",
-              gap:
-                "10px",
-            }}
+          <button
+            className="secondary-button"
+            onClick={
+              loadAllData
+            }
+            disabled={
+              loadingData
+            }
           >
-
-            <button
-              className="secondary-button"
-              onClick={
-                loadAllData
-              }
-              disabled={
-                loadingData
-              }
-            >
-              {loadingData
-                ? "Refreshing..."
-                : "↻ Refresh"}
-            </button>
-
-            <button
-              className="primary-button"
-              onClick={() =>
-                setShowAddSite(
-                  true
-                )
-              }
-            >
-              + New Site
-            </button>
-
-          </div>
-
+            {loadingData
+              ? "Refreshing..."
+              : "↻ Refresh"}
+          </button>
         </header>
 
-        {/* STATISTICS */}
-
-        <div className="stats-grid">
-
-          <div className="stat-card">
-
-            <div className="stat-icon">
-              ⌂
-            </div>
-
-            <div>
-              <span>
-                Total Sites
-              </span>
-
-              <strong>
-                {totalSites}
-              </strong>
-            </div>
-
-          </div>
-
-          <div className="stat-card">
-
-            <div className="stat-icon">
-              ●
-            </div>
-
-            <div>
-              <span>
-                Active Sites
-              </span>
-
-              <strong>
-                {activeSites}
-              </strong>
-            </div>
-
-          </div>
-
-          <div className="stat-card">
-
-            <div className="stat-icon">
-              ▤
-            </div>
-
-            <div>
-              <span>
-                Total Panels
-              </span>
-
-              <strong>
-                {totalPanels}
-              </strong>
-            </div>
-
-          </div>
-
-          <div className="stat-card">
-
-            <div className="stat-icon">
-              ✓
-            </div>
-
-            <div>
-              <span>
-                Packed Panels
-              </span>
-
-              <strong>
-                {packedPanels}
-              </strong>
-            </div>
-
-          </div>
-
-          <div className="stat-card">
-
-            <div className="stat-icon">
-              QR
-            </div>
-
-            <div>
-              <span>
-                QR Ready
-              </span>
-
-              <strong>
-                {qrReadyPanels}
-              </strong>
-            </div>
-
-          </div>
-
-        </div>
-
-        {/* FACTORY SITES */}
-
-        <section className="panel projects-panel">
+        <section className="panel">
 
           <div
-            className="panel-header"
             style={{
-              display:
-                "flex",
-              alignItems:
-                "center",
-              justifyContent:
-                "flex-start",
-              gap:
-                "25px",
-              minHeight:
-                "65px",
+              width: "100%",
+              boxSizing:
+                "border-box",
+              border:
+                "1px solid #e5e7eb",
+              borderRadius:
+                "16px",
+              background:
+                "#ffffff",
+              padding:
+                "0 28px",
+              marginBottom:
+                "24px",
             }}
           >
-
             <div
               style={{
                 display:
                   "flex",
                 alignItems:
-                  "center",
-                gap:
-                  "6px",
+                  "stretch",
+                overflowX:
+                  "auto",
               }}
             >
+              {tabs.map(
+                (tab) => {
+                  const active =
+                    dashboardTab ===
+                    tab.key;
 
-              {/* PROGRESS */}
+                  return (
+                    <button
+                      key={
+                        tab.key
+                      }
+                      type="button"
+                      onClick={() =>
+                        setDashboardTab(
+                          tab.key
+                        )
+                      }
+                      style={{
+                        flex:
+                          "0 0 auto",
+                        minWidth:
+                          "240px",
+                        padding:
+                          "22px 24px 18px",
+                        border:
+                          "none",
+                        borderBottom:
+                          active
+                            ? "4px solid #2563eb"
+                            : "4px solid transparent",
+                        background:
+                          "transparent",
+                        color:
+                          active
+                            ? "#2563eb"
+                            : "#6b7280",
+                        fontSize:
+                          "18px",
+                        fontWeight:
+                          active
+                            ? "700"
+                            : "600",
+                        cursor:
+                          "pointer",
+                        textAlign:
+                          "left",
+                        whiteSpace:
+                          "nowrap",
+                      }}
+                    >
+                      <span
+                        style={{
+                          marginRight:
+                            "8px",
+                        }}
+                      >
+                        {
+                          tab.icon
+                        }
+                      </span>
 
-              <button
-                onClick={() =>
-                  setDashboardView(
-                    "progress"
-                  )
+                      {
+                        tab.label
+                      }{" "}
+                      (
+                      {
+                        tab.count
+                      }
+                      )
+                    </button>
+                  );
                 }
-                style={{
-                  border:
-                    "none",
-                  borderBottom:
-                    dashboardView ===
-                    "progress"
-                      ? "3px solid #2563eb"
-                      : "3px solid transparent",
-                  background:
-                    "transparent",
-                  padding:
-                    "12px 16px",
-                  cursor:
-                    "pointer",
-                  fontWeight:
-                    "700",
-                  fontSize:
-                    "15px",
-                  color:
-                    dashboardView ===
-                    "progress"
-                      ? "#2563eb"
-                      : "#6b7280",
-                  whiteSpace:
-                    "nowrap",
-                }}
-              >
-                ▤ Progress Sites{" "}
-                <span>
-                  ({progressSites.length})
-                </span>
-              </button>
-
-              {/* DELIVERED */}
-
-              <button
-                onClick={() =>
-                  setDashboardView(
-                    "delivered"
-                  )
-                }
-                style={{
-                  border:
-                    "none",
-                  borderBottom:
-                    dashboardView ===
-                    "delivered"
-                      ? "3px solid #16a34a"
-                      : "3px solid transparent",
-                  background:
-                    "transparent",
-                  padding:
-                    "12px 16px",
-                  cursor:
-                    "pointer",
-                  fontWeight:
-                    "700",
-                  fontSize:
-                    "15px",
-                  color:
-                    dashboardView ===
-                    "delivered"
-                      ? "#16a34a"
-                      : "#6b7280",
-                  whiteSpace:
-                    "nowrap",
-                }}
-              >
-                ✓ Delivered{" "}
-                <span>
-                  ({deliveredSites.length})
-                </span>
-              </button>
-
+              )}
             </div>
-
           </div>
 
-          {renderSiteTable(
-            currentSites
-          )}
+          {renderDashboardSiteProgress()}
 
         </section>
-
       </>
     );
   }
@@ -2374,17 +2126,17 @@ console.log("SUPABASE SITES:", sitesData);
         <div className="section-header">
 
           <div>
+            <p className="eyebrow">
+              TRACKERZ
+            </p>
+
             <h2>
-              All Sites
+              Sites
             </h2>
 
             <p>
-              {sites.length} site
-              {sites.length ===
-              1
-                ? ""
-                : "s"}{" "}
-              in Trackerz
+              Manage factory projects
+              and site information.
             </p>
           </div>
 
@@ -2479,8 +2231,6 @@ console.log("SUPABASE SITES:", sitesData);
     return (
       <section>
 
-        {/* HEADER */}
-
         <div className="site-detail-header">
 
           <div>
@@ -2538,8 +2288,6 @@ console.log("SUPABASE SITES:", sitesData);
 
         </div>
 
-        {/* SITE INFORMATION */}
-
         <div className="site-info-grid">
 
           <div className="info-card">
@@ -2588,12 +2336,9 @@ console.log("SUPABASE SITES:", sitesData);
 
         </div>
 
-        {/* PANEL TRACKING */}
-
         <div className="section-header">
 
           <div>
-
             <h2>
               Panel Tracking
             </h2>
@@ -2602,13 +2347,10 @@ console.log("SUPABASE SITES:", sitesData);
               Track every panel belonging
               to this site.
             </p>
-
           </div>
 
           <div className="packing-progress">
-            {percentage}%
-            {" "}
-            packed
+            {percentage}% packed
           </div>
 
         </div>
@@ -2627,8 +2369,7 @@ console.log("SUPABASE SITES:", sitesData);
 
             <p>
               Upload the site's Excel
-              cutlist to begin tracking
-              panels.
+              cutlist to begin tracking.
             </p>
 
             <button
@@ -2650,37 +2391,14 @@ console.log("SUPABASE SITES:", sitesData);
 
               <thead>
                 <tr>
-                  <th>
-                    Panel
-                  </th>
-
-                  <th>
-                    Length
-                  </th>
-
-                  <th>
-                    Width
-                  </th>
-
-                  <th>
-                    Thickness
-                  </th>
-
-                  <th>
-                    Qty
-                  </th>
-
-                  <th>
-                    QR Data
-                  </th>
-
-                  <th>
-                    Status
-                  </th>
-
-                  <th>
-                    Action
-                  </th>
+                  <th>Panel</th>
+                  <th>Length</th>
+                  <th>Width</th>
+                  <th>Thickness</th>
+                  <th>Qty</th>
+                  <th>QR Data</th>
+                  <th>Status</th>
+                  <th>Action</th>
                 </tr>
               </thead>
 
@@ -2788,7 +2506,7 @@ console.log("SUPABASE SITES:", sitesData);
   }
 
   /* ======================================================
-     IMPORT CUTLIST MODAL
+     IMPORT MODAL FOR SITE DETAILS
   ====================================================== */
 
   function renderImportModal() {
@@ -2854,8 +2572,6 @@ console.log("SUPABASE SITES:", sitesData);
 
           </div>
 
-          {/* UPLOAD */}
-
           <div className="upload-area">
 
             <div className="upload-icon">
@@ -2881,8 +2597,6 @@ console.log("SUPABASE SITES:", sitesData);
 
           </div>
 
-          {/* SELECTED FILE */}
-
           {importFile && (
             <div className="selected-file">
 
@@ -2893,8 +2607,6 @@ console.log("SUPABASE SITES:", sitesData);
 
             </div>
           )}
-
-          {/* PREVIEW */}
 
           {importRows.length >
             0 && (
@@ -3010,8 +2722,6 @@ console.log("SUPABASE SITES:", sitesData);
 
             </div>
           )}
-
-          {/* ACTIONS */}
 
           <div className="modal-actions">
 
@@ -3223,6 +2933,7 @@ console.log("SUPABASE SITES:", sitesData);
                   })
                 }
               >
+
                 <option value="Active">
                   Active
                 </option>
@@ -3275,24 +2986,16 @@ console.log("SUPABASE SITES:", sitesData);
   }
 
   /* ======================================================
-     OTHER APPLICATION PAGES
+     PAGE ROUTING
   ====================================================== */
 
   function renderPage() {
-    /*
-    DASHBOARD
-    */
-
     if (
       activePage ===
       "dashboard"
     ) {
       return renderDashboard();
     }
-
-    /*
-    SITES
-    */
 
     if (
       activePage ===
@@ -3301,10 +3004,6 @@ console.log("SUPABASE SITES:", sitesData);
       return renderSitesPage();
     }
 
-    /*
-    CURRENT SITE
-    */
-
     if (
       activePage ===
       "site"
@@ -3312,45 +3011,54 @@ console.log("SUPABASE SITES:", sitesData);
       return renderSiteDetails();
     }
 
-    /*
-    INTEGRATED CUTLIST IMPORT PAGE
-
-    IMPORTANT:
-    Cutlist Import is handled here instead of a separate
-    CutlistImport component so the "Release to Production"
-    button uses the exact same Supabase insert function
-    that writes to public.panels.
-    */
-
     if (
       activePage ===
       "cutlist"
     ) {
       return (
         <CutlistImportPage
-          sites={sites}
-          selectedSite={selectedSite}
-          setSelectedSite={setSelectedSite}
-          setActivePage={setActivePage}
-          importFile={importFile}
-          importRows={importRows}
-          importing={importing}
-          handleFileSelect={handleFileSelect}
-          importCutlist={importCutlist}
-          openSite={openSite}
-          setShowAddSite={setShowAddSite}
-          setImportRows={setImportRows}
-          setImportFile={setImportFile}
-          setMessage={setMessage}
-          setError={setError}
-          panels={panels}
+          selectedSite={
+            selectedSite
+          }
+          setSelectedSite={
+            setSelectedSite
+          }
+          setActivePage={
+            setActivePage
+          }
+          importFile={
+            importFile
+          }
+          importRows={
+            importRows
+          }
+          importing={
+            importing
+          }
+          handleFileSelect={
+            handleFileSelect
+          }
+          importCutlist={
+            importCutlist
+          }
+          setImportRows={
+            setImportRows
+          }
+          setImportFile={
+            setImportFile
+          }
+          setMessage={
+            setMessage
+          }
+          setError={
+            setError
+          }
+          createSiteRecord={
+            createSiteRecord
+          }
         />
       );
     }
-
-    /*
-    EXISTING QR TRACKING PAGE
-    */
 
     if (
       activePage ===
@@ -3361,43 +3069,23 @@ console.log("SUPABASE SITES:", sitesData);
       );
     }
 
-    /*
-    EXISTING PRODUCTION PAGE
-    */
-
     if (
       activePage ===
-      "production"
+      "reports"
     ) {
       return (
         <Production />
       );
     }
 
-    /*
-    REPORTS
-
-    Keep Reports as its own page. It reads the same Supabase
-    state already loaded by App.jsx.
-    */
-
     if (
       activePage ===
-      "reports"
+      "dispatch"
     ) {
       return (
-        <ReportsPage
-          sites={sites}
-          panels={panels}
-          getSiteProgress={getSiteProgress}
-          isPanelPacked={isPanelPacked}
-        />
+        <Dispatch />
       );
     }
-
-    /*
-    PROJECTS
-    */
 
     if (
       activePage ===
@@ -3407,10 +3095,6 @@ console.log("SUPABASE SITES:", sitesData);
         <Projects />
       );
     }
-
-    /*
-    SETTINGS
-    */
 
     if (
       activePage ===
@@ -3479,7 +3163,7 @@ console.log("SUPABASE SITES:", sitesData);
               </span>
 
               <strong>
-                {totalPanels}
+                {panels.length}
               </strong>
             </div>
 
@@ -3488,10 +3172,6 @@ console.log("SUPABASE SITES:", sitesData);
         </div>
       );
     }
-
-    /*
-    DEFAULT
-    */
 
     return renderDashboard();
   }
@@ -3528,13 +3208,6 @@ console.log("SUPABASE SITES:", sitesData);
     return (
       <Login
         onLogin={(user) => {
-          /*
-          Login.jsx already uses Supabase authentication.
-
-          Keep this callback so the existing Login component
-          remains compatible.
-          */
-
           if (user) {
             setSession({
               user,
@@ -3546,21 +3219,15 @@ console.log("SUPABASE SITES:", sitesData);
   }
 
   /* ======================================================
-     MAIN TRACKERZ APPLICATION
+     MAIN APPLICATION
   ====================================================== */
 
   return (
     <div className="app">
 
-      {/* SIDEBAR */}
-
       {renderNavigation()}
 
-      {/* MAIN CONTENT */}
-
       <main className="main">
-
-        {/* TOP ERROR */}
 
         {error && (
           <div className="alert error-alert">
@@ -3582,8 +3249,6 @@ console.log("SUPABASE SITES:", sitesData);
           </div>
         )}
 
-        {/* TOP SUCCESS MESSAGE */}
-
         {message && (
           <div className="alert success-alert">
 
@@ -3602,8 +3267,6 @@ console.log("SUPABASE SITES:", sitesData);
           </div>
         )}
 
-        {/* DATABASE LOADING */}
-
         {loadingData && (
           <div className="loading-bar">
             Loading Trackerz data
@@ -3611,17 +3274,11 @@ console.log("SUPABASE SITES:", sitesData);
           </div>
         )}
 
-        {/* PAGE */}
-
         {renderPage()}
 
       </main>
 
-      {/* CREATE SITE */}
-
       {renderCreateSiteModal()}
-
-      {/* IMPORT CUTLIST */}
 
       {renderImportModal()}
 
@@ -3629,13 +3286,11 @@ console.log("SUPABASE SITES:", sitesData);
   );
 }
 
-
 /* =========================================================
-   INTEGRATED CUTLIST IMPORT PAGE
+   CUTLIST IMPORT PAGE
 ========================================================= */
 
 function CutlistImportPage({
-  sites,
   selectedSite,
   setSelectedSite,
   setActivePage,
@@ -3644,429 +3299,1127 @@ function CutlistImportPage({
   importing,
   handleFileSelect,
   importCutlist,
-  openSite,
-  setShowAddSite,
   setImportRows,
   setImportFile,
   setMessage,
   setError,
-  panels,
+  createSiteRecord,
 }) {
-  const [siteName, setSiteName] = useState(
-    selectedSite?.site_name || ""
-  );
-  const [clientName, setClientName] = useState(
-    selectedSite?.client_name || ""
-  );
-  const [contact, setContact] = useState(
-    selectedSite?.contact || ""
-  );
-  const [address, setAddress] = useState(
-    selectedSite?.address || ""
-  );
+  const [siteName, setSiteName] =
+    useState("");
+
+  const [clientName, setClientName] =
+    useState("");
+
+  const [contact, setContact] =
+    useState("");
+
+  const [address, setAddress] =
+    useState("");
+
+  const [released, setReleased] =
+    useState(false);
+
+  const [releasedSite, setReleasedSite] =
+    useState(null);
+
+  /* ======================================================
+     CLEAN CUTLIST PAGE RESET
+  ====================================================== */
 
   useEffect(() => {
-    setSiteName(selectedSite?.site_name || "");
-    setClientName(selectedSite?.client_name || "");
-    setContact(selectedSite?.contact || "");
-    setAddress(selectedSite?.address || "");
-  }, [selectedSite?.id]);
+    setSiteName("");
+    setClientName("");
+    setContact("");
+    setAddress("");
+    setReleased(false);
+    setReleasedSite(null);
+  }, []);
 
-  const existingPanelCount = selectedSite
-    ? panels.filter(
-        (panel) =>
-          String(panel.site_id) === String(selectedSite.id)
-      ).length
-    : 0;
+  /* ======================================================
+     QR SITE NAME
+  ====================================================== */
 
-  const selectExistingSite = (siteId) => {
-    const site = sites.find(
-      (item) => String(item.id) === String(siteId)
-    );
+  const previewSiteName =
+    releasedSite?.site_name ||
+    siteName.trim();
 
-    if (!site) {
-      setSelectedSite(null);
-      return;
-    }
-
-    setSelectedSite(site);
-    setActivePage("cutlist");
-    setMessage("");
-    setError("");
-  };
-
-  const clearCutlist = () => {
-    setImportRows([]);
-    setImportFile(null);
-    setMessage("");
-    setError("");
-  };
-
-  const release = async () => {
-    if (!selectedSite) {
-      setError("Please select or create a site before releasing the cutlist.");
-      return;
-    }
-
-    if (!importRows.length) {
-      setError("Please upload an Excel cutlist first.");
-      return;
-    }
-
-    if (existingPanelCount > 0) {
-      const confirmed = window.confirm(
-        `${selectedSite.site_name} already has ${existingPanelCount} panel records in Supabase.\n\n` +
-        "Release this cutlist again and create another set of panels?\n\n" +
-        "Choose Cancel if this is the same cutlist you already released."
-      );
-
-      if (!confirmed) return;
-    }
-
-    await importCutlist();
-  };
-
-  const downloadQrCutlist = () => {
-    if (!importRows.length) {
-      setError("Upload a cutlist before downloading the QR cutlist.");
-      return;
-    }
-
-    const cleanSiteName = String(
-      selectedSite?.site_name || siteName || "SITE"
+  const cleanSiteName =
+    String(
+      previewSiteName ||
+        "SITE"
     )
       .trim()
-      .replace(/[^a-zA-Z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
+      .replace(
+        /[^a-zA-Z0-9]+/g,
+        "-"
+      )
+      .replace(
+        /^-+|-+$/g,
+        ""
+      )
       .toUpperCase();
 
-    const rows = importRows.map((row, index) => {
-      const qrColumn = Object.keys(row).find(
+  /* ======================================================
+     RESET CUTLIST
+  ====================================================== */
+
+  function clearCutlist() {
+    setImportRows([]);
+    setImportFile(null);
+
+    setSiteName("");
+    setClientName("");
+    setContact("");
+    setAddress("");
+
+    setReleased(false);
+    setReleasedSite(null);
+
+    setMessage("");
+    setError("");
+  }
+
+  /* ======================================================
+     QR DATA
+  ====================================================== */
+
+  function getQrForRow(
+    row,
+    index
+  ) {
+    const qrColumn =
+      Object.keys(row).find(
         (key) =>
-          ["qr data", "qr_data", "qr", "qr code", "qr_code"].includes(
-            String(key).trim().toLowerCase()
+          [
+            "qr data",
+            "qr_data",
+            "qr",
+            "qr code",
+            "qr_code",
+          ].includes(
+            String(key)
+              .trim()
+              .toLowerCase()
           )
       );
 
-      return {
-        ...row,
-        "QR Data":
-          row[qrColumn] ||
-          `TRK-${cleanSiteName}-${String(index + 1).padStart(4, "0")}`,
-      };
-    });
+    return (
+      row[qrColumn] ||
+      `TRK-${cleanSiteName}-${String(
+        index + 1
+      ).padStart(4, "0")}`
+    );
+  }
 
-    const worksheet = XLSX.utils.json_to_sheet(rows);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "QR Cutlist");
+  /* ======================================================
+     DOWNLOAD QR CUTLIST
+  ====================================================== */
+
+  function downloadQrCutlist() {
+    if (!importRows.length) {
+      setError(
+        "Upload a cutlist before downloading the QR cutlist."
+      );
+      return;
+    }
+
+    if (!releasedSite) {
+      setError(
+        "Release the cutlist to production first."
+      );
+      return;
+    }
+
+    const rows =
+      importRows.map(
+        (row, index) => ({
+          ...row,
+          "QR Data":
+            getQrForRow(
+              row,
+              index
+            ),
+        })
+      );
+
+    const worksheet =
+      XLSX.utils.json_to_sheet(
+        rows
+      );
+
+    const workbook =
+      XLSX.utils.book_new();
+
+    XLSX.utils.book_append_sheet(
+      workbook,
+      worksheet,
+      "QR Cutlist"
+    );
 
     XLSX.writeFile(
       workbook,
-      `${cleanSiteName || "TRACKERZ"}_QR_Cutlist.xlsx`
+      `${cleanSiteName}_QR_Cutlist.xlsx`
     );
 
-    setMessage("QR-enabled cutlist downloaded.");
+    setMessage(
+      "QR-enabled cutlist downloaded successfully."
+    );
+  }
+
+  /* ======================================================
+     RELEASE TO PRODUCTION
+  ====================================================== */
+
+  async function releaseToProduction() {
+    setError("");
+    setMessage("");
+
+    if (!siteName.trim()) {
+      setError(
+        "Please enter the new site name."
+      );
+      return;
+    }
+
+    if (!clientName.trim()) {
+      setError(
+        "Please enter the client name."
+      );
+      return;
+    }
+
+    if (!importRows.length) {
+      setError(
+        "Please upload the Excel cutlist first."
+      );
+      return;
+    }
+
+    if (!createSiteRecord) {
+      setError(
+        "Site creation function is not available. Please refresh Trackerz."
+      );
+      return;
+    }
+
+    try {
+      /*
+      ------------------------------------------------------
+      STEP 1
+      CREATE SITE
+      ------------------------------------------------------
+      */
+
+      const newSite =
+        await createSiteRecord({
+          site_name:
+            siteName.trim(),
+
+          client_name:
+            clientName.trim(),
+
+          contact:
+            contact.trim(),
+
+          address:
+            address.trim(),
+        });
+
+      /*
+      ------------------------------------------------------
+      STEP 2
+      SELECT CREATED SITE
+      ------------------------------------------------------
+      */
+
+      setSelectedSite(
+        newSite
+      );
+
+      /*
+      ------------------------------------------------------
+      STEP 3
+      IMPORT PANELS
+      ------------------------------------------------------
+      */
+
+      await importCutlist(
+        newSite,
+        {
+          keepPreview: true,
+        }
+      );
+
+      /*
+      ------------------------------------------------------
+      STEP 4
+      MARK RELEASED
+      ------------------------------------------------------
+      */
+
+      setReleasedSite(
+        newSite
+      );
+
+      setReleased(
+        true
+      );
+
+      setMessage(
+        `Released ${importRows.length} cutlist rows to production for ${newSite.site_name}.`
+      );
+    } catch (err) {
+      console.error(
+        "Release to production error:",
+        err
+      );
+
+      setReleased(
+        false
+      );
+
+      setReleasedSite(
+        null
+      );
+
+      setError(
+        err.message ||
+          "Unable to release the cutlist to production."
+      );
+    }
+  }
+
+  /* ======================================================
+     INPUT STYLE
+  ====================================================== */
+
+  const inputStyle = {
+    width: "100%",
+    boxSizing:
+      "border-box",
+    padding:
+      "12px 13px",
+    border:
+      "1px solid #d1d5db",
+    borderRadius:
+      "8px",
+    fontSize:
+      "15px",
+    background:
+      "#ffffff",
   };
+
+  /* ======================================================
+     PAGE
+  ====================================================== */
 
   return (
     <>
+      {/* ==================================================
+          PAGE HEADER
+      ================================================== */}
+
       <header className="topbar">
+
         <div>
-          <p className="eyebrow">TRACKERZ PRODUCTION</p>
-          <h2>Cutlist Import</h2>
-          <p className="subtitle">
-            Import the production cutlist, generate QR data and release the
-            panels for packing tracking.
+
+          <p className="eyebrow">
+            TRACKERZ PRODUCTION
           </p>
+
+          <h2>
+            Cutlist Import
+          </h2>
+
+          <p className="subtitle">
+            Create a new site, upload the
+            cutlist and release the panels
+            to production.
+          </p>
+
         </div>
 
-        <button
-          className="secondary-button"
-          onClick={() => setActivePage("dashboard")}
-        >
-          ← Dashboard
-        </button>
+        {/* NO DASHBOARD BUTTON HERE */}
+
       </header>
 
+      {/* ==================================================
+          1. NEW SITE
+      ================================================== */}
+
       <section className="panel">
+
         <div className="section-header">
+
           <div>
-            <h2>Site Information</h2>
+
+            <h2>
+              1. New Site
+            </h2>
+
             <p>
-              Select an existing site or create a new site before uploading
-              the cutlist.
+              Enter the site information
+              for this production order.
             </p>
+
           </div>
 
-          <button
-            className="primary-button"
-            onClick={() => setShowAddSite(true)}
-          >
-            + New Site
-          </button>
         </div>
 
-        <div className="site-info-grid">
-          <div className="info-card">
-            <span>Existing Site</span>
-            <select
-              value={selectedSite?.id || ""}
-              onChange={(event) =>
-                selectExistingSite(event.target.value)
-              }
+        <div
+          style={{
+            display:
+              "grid",
+            gridTemplateColumns:
+              "repeat(2, minmax(240px, 1fr))",
+            gap:
+              "18px",
+          }}
+        >
+
+          {/* SITE NAME */}
+
+          <label>
+
+            <span
               style={{
-                width: "100%",
-                marginTop: "8px",
-                padding: "10px",
-                border: "1px solid #d1d5db",
-                borderRadius: "7px",
-                background: "#fff",
+                display:
+                  "block",
+                marginBottom:
+                  "7px",
+                fontWeight:
+                  "700",
+                color:
+                  "#374151",
               }}
             >
-              <option value="">Select site</option>
-              {sites.map((site) => (
-                <option key={site.id} value={site.id}>
-                  {site.site_name}
-                  {site.client_name
-                    ? ` — ${site.client_name}`
-                    : ""}
-                </option>
-              ))}
-            </select>
-          </div>
+              Site Name *
+            </span>
 
-          <div className="info-card">
-            <span>Site Name</span>
-            <strong>{selectedSite?.site_name || siteName || "—"}</strong>
-          </div>
+            <input
+              type="text"
+              value={
+                siteName
+              }
+              onChange={(
+                event
+              ) => {
+                setSiteName(
+                  event.target
+                    .value
+                );
 
-          <div className="info-card">
-            <span>Client</span>
-            <strong>
-              {selectedSite?.client_name || clientName || "—"}
-            </strong>
-          </div>
+                setReleased(
+                  false
+                );
 
-          <div className="info-card">
-            <span>Existing Panels</span>
-            <strong>{existingPanelCount}</strong>
-          </div>
+                setReleasedSite(
+                  null
+                );
+              }}
+              disabled={
+                released
+              }
+              placeholder="Example: Siva kitchen"
+              style={
+                inputStyle
+              }
+            />
+
+          </label>
+
+          {/* CLIENT NAME */}
+
+          <label>
+
+            <span
+              style={{
+                display:
+                  "block",
+                marginBottom:
+                  "7px",
+                fontWeight:
+                  "700",
+                color:
+                  "#374151",
+              }}
+            >
+              Client Name *
+            </span>
+
+            <input
+              type="text"
+              value={
+                clientName
+              }
+              onChange={(
+                event
+              ) => {
+                setClientName(
+                  event.target
+                    .value
+                );
+
+                setReleased(
+                  false
+                );
+
+                setReleasedSite(
+                  null
+                );
+              }}
+              disabled={
+                released
+              }
+              placeholder="Example: Agna Ventures"
+              style={
+                inputStyle
+              }
+            />
+
+          </label>
+
+          {/* CONTACT */}
+
+          <label>
+
+            <span
+              style={{
+                display:
+                  "block",
+                marginBottom:
+                  "7px",
+                fontWeight:
+                  "700",
+                color:
+                  "#374151",
+              }}
+            >
+              Contact
+            </span>
+
+            <input
+              type="text"
+              value={
+                contact
+              }
+              onChange={(
+                event
+              ) =>
+                setContact(
+                  event.target
+                    .value
+                )
+              }
+              disabled={
+                released
+              }
+              placeholder="Phone number"
+              style={
+                inputStyle
+              }
+            />
+
+          </label>
+
+          {/* ADDRESS */}
+
+          <label>
+
+            <span
+              style={{
+                display:
+                  "block",
+                marginBottom:
+                  "7px",
+                fontWeight:
+                  "700",
+                color:
+                  "#374151",
+              }}
+            >
+              Address
+            </span>
+
+            <input
+              type="text"
+              value={
+                address
+              }
+              onChange={(
+                event
+              ) =>
+                setAddress(
+                  event.target
+                    .value
+                )
+              }
+              disabled={
+                released
+              }
+              placeholder="Site address"
+              style={
+                inputStyle
+              }
+            />
+
+          </label>
+
         </div>
 
-        {selectedSite && (
+        {/* RELEASED STATUS */}
+
+        {releasedSite && (
           <div
             style={{
-              display: "grid",
-              gridTemplateColumns:
-                "repeat(auto-fit, minmax(180px, 1fr))",
-              gap: "12px",
-              marginTop: "16px",
+              marginTop:
+                "18px",
+              padding:
+                "13px 15px",
+              border:
+                "1px solid #bbf7d0",
+              background:
+                "#f0fdf4",
+              borderRadius:
+                "9px",
+              color:
+                "#166534",
+              fontWeight:
+                "600",
             }}
           >
-            <label>
-              Site Name
-              <input
-                value={siteName}
-                readOnly
-                style={{ width: "100%", boxSizing: "border-box" }}
-              />
-            </label>
-
-            <label>
-              Client Name
-              <input
-                value={clientName}
-                readOnly
-                style={{ width: "100%", boxSizing: "border-box" }}
-              />
-            </label>
-
-            <label>
-              Contact
-              <input
-                value={contact}
-                readOnly
-                style={{ width: "100%", boxSizing: "border-box" }}
-              />
-            </label>
-
-            <label>
-              Address
-              <input
-                value={address}
-                readOnly
-                style={{ width: "100%", boxSizing: "border-box" }}
-              />
-            </label>
+            ✓ Site created and
+            released:
+            {" "}
+            {
+              releasedSite.site_name
+            }
+            {" — "}
+            {
+              releasedSite.client_name
+            }
           </div>
         )}
+
       </section>
 
+      {/* ==================================================
+          2. UPLOAD CUTLIST
+      ================================================== */}
+
       <section className="panel">
+
         <div className="section-header">
+
           <div>
-            <h2>Upload Cutlist</h2>
+
+            <h2>
+              2. Upload Cutlist
+            </h2>
+
             <p>
-              Excel rows are previewed first. Nothing is inserted into
-              Supabase until you click Release to Production.
+              Select the Excel cutlist
+              and preview it before
+              releasing to production.
             </p>
+
           </div>
+
         </div>
 
-        <div className="upload-area">
-          <div className="upload-icon">XLS</div>
+        <div
+          className="upload-area"
+        >
 
-          <h3>Select Excel Cutlist</h3>
+          <div className="upload-icon">
+            XLS
+          </div>
 
-          <p>Supported formats: .xlsx, .xls, .csv</p>
+          <h3>
+            Select Excel Cutlist
+          </h3>
+
+          <p>
+            Supported formats:
+            .xlsx, .xls, .csv
+          </p>
 
           <input
             type="file"
             accept=".xlsx,.xls,.csv"
-            onChange={handleFileSelect}
-            disabled={importing}
+            onChange={(
+              event
+            ) => {
+              setReleased(
+                false
+              );
+
+              setReleasedSite(
+                null
+              );
+
+              handleFileSelect(
+                event
+              );
+            }}
+            disabled={
+              importing
+            }
           />
 
           {importFile && (
             <div className="selected-file">
-              <strong>Selected file:</strong> {importFile.name}
+
+              <strong>
+                Selected file:
+              </strong>{" "}
+
+              {
+                importFile.name
+              }
+
             </div>
           )}
+
         </div>
 
-        {importRows.length > 0 && (
-          <>
-            <div
-              className="section-header"
-              style={{ marginTop: "20px" }}
-            >
-              <div>
-                <h2>Cutlist Preview</h2>
-                <p>
-                  {importRows.length} rows loaded. QR data will use the
-                  <strong> site name</strong>, not the client name.
-                </p>
-              </div>
+      </section>
 
-              <span className="status active-status">
-                {importRows.length} panels ready
-              </span>
-            </div>
+      {/* ==================================================
+          3. CUTLIST PREVIEW
+      ================================================== */}
 
-            <div className="panel-table-wrapper">
-              <table className="panel-table">
-                <thead>
-                  <tr>
-                    {Object.keys(importRows[0])
-                      .slice(0, 10)
-                      .map((key) => (
-                        <th key={key}>{key}</th>
-                      ))}
-                    <th>QR Data</th>
-                  </tr>
-                </thead>
+      {importRows.length >
+        0 && (
+        <section className="panel">
 
-                <tbody>
-                  {importRows.slice(0, 100).map((row, index) => {
-                    const assembly =
-                      row["Assembly Label"] ||
-                      row.assembly_label ||
-                      row["FB Name"] ||
-                      row.fb_name ||
-                      row["Panel Name"] ||
-                      row.panel_name ||
-                      `Panel-${index + 1}`;
+          <div className="section-header">
 
-                    const cleanSiteName = String(
-                      selectedSite?.site_name || siteName || "SITE"
-                    )
-                      .trim()
-                      .replace(/[^a-zA-Z0-9]+/g, "-")
-                      .replace(/^-+|-+$/g, "")
-                      .toUpperCase();
+            <div>
 
-                    const qr =
-                      row["QR Data"] ||
-                      row.qr_data ||
-                      row.QR ||
-                      `TRK-${cleanSiteName}-${String(index + 1).padStart(
-                        4,
-                        "0"
-                      )}`;
+              <h2>
+                3. Cutlist Preview
+              </h2>
 
-                    return (
-                      <tr key={index}>
-                        {Object.keys(importRows[0])
-                          .slice(0, 10)
-                          .map((key) => (
-                            <td key={key}>{String(row[key] ?? "")}</td>
-                          ))}
-                        <td>
-                          <code>{qr}</code>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            {importRows.length > 100 && (
-              <p className="preview-note">
-                Showing first 100 rows. All {importRows.length} rows will be
-                released.
+              <p>
+                Review the imported rows
+                before releasing them.
               </p>
-            )}
-          </>
-        )}
 
-        <div className="modal-actions" style={{ marginTop: "20px" }}>
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={importing || !importRows.length}
-            onClick={downloadQrCutlist}
-          >
-            ↓ Download QR Cutlist
-          </button>
+            </div>
 
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={importing || !importRows.length}
-            onClick={clearCutlist}
+            <span
+              style={{
+                padding:
+                  "8px 12px",
+                borderRadius:
+                  "8px",
+                background:
+                  "#eff6ff",
+                color:
+                  "#1d4ed8",
+                fontWeight:
+                  "700",
+                fontSize:
+                  "13px",
+              }}
+            >
+              {
+                importRows.length
+              }{" "}
+              Rows Loaded
+            </span>
+
+          </div>
+
+          <div
+            className="panel-table-wrapper"
           >
-            Clear
-          </button>
+
+            <table
+              className="panel-table"
+            >
+
+              <thead>
+
+                <tr>
+
+                  {Object.keys(
+                    importRows[0]
+                  )
+                    .slice(
+                      0,
+                      10
+                    )
+                    .map(
+                      (
+                        key
+                      ) => (
+                        <th
+                          key={
+                            key
+                          }
+                        >
+                          {key}
+                        </th>
+                      )
+                    )}
+
+                  <th>
+                    QR Data
+                  </th>
+
+                </tr>
+
+              </thead>
+
+              <tbody>
+
+                {importRows
+                  .slice(
+                    0,
+                    10
+                  )
+                  .map(
+                    (
+                      row,
+                      index
+                    ) => (
+                      <tr
+                        key={
+                          index
+                        }
+                      >
+
+                        {Object.keys(
+                          importRows[0]
+                        )
+                          .slice(
+                            0,
+                            10
+                          )
+                          .map(
+                            (
+                              key
+                            ) => (
+                              <td
+                                key={
+                                  key
+                                }
+                              >
+                                {String(
+                                  row[
+                                    key
+                                  ] ??
+                                    ""
+                                )}
+                              </td>
+                            )
+                          )}
+
+                        <td>
+
+                          <code>
+                            {
+                              getQrForRow(
+                                row,
+                                index
+                              )
+                            }
+                          </code>
+
+                        </td>
+
+                      </tr>
+                    )
+                  )}
+
+              </tbody>
+
+            </table>
+
+          </div>
+
+          {importRows.length >
+            10 && (
+            <p
+              className="preview-note"
+            >
+              Showing first 10 rows.
+              All{" "}
+              {
+                importRows.length
+              }{" "}
+              rows will be imported.
+            </p>
+          )}
+
+        </section>
+      )}
+
+      {/* ==================================================
+          4. PRODUCTION ACTIONS
+      ================================================== */}
+
+      <section className="panel">
+
+        <div className="section-header">
+
+          <div>
+
+            <h2>
+              4. Production Actions
+            </h2>
+
+            <p>
+              Release the site and
+              create its panel records
+              in Supabase.
+            </p>
+
+          </div>
+
+          {released && (
+            <span
+              style={{
+                padding:
+                  "8px 13px",
+                borderRadius:
+                  "999px",
+                background:
+                  "#dcfce7",
+                color:
+                  "#166534",
+                fontWeight:
+                  "700",
+                fontSize:
+                  "13px",
+              }}
+            >
+              ✓ Released
+            </span>
+          )}
+
+        </div>
+
+        <div
+          style={{
+            display:
+              "flex",
+            alignItems:
+              "center",
+            gap:
+              "12px",
+            flexWrap:
+              "wrap",
+          }}
+        >
+
+          {/* RELEASE TO PRODUCTION */}
 
           <button
             type="button"
             className="primary-button"
             disabled={
               importing ||
-              !selectedSite ||
-              importRows.length === 0
+              released ||
+              !siteName.trim() ||
+              !clientName.trim() ||
+              !importRows.length
             }
-            onClick={release}
+            onClick={
+              releaseToProduction
+            }
           >
             {importing
               ? "Releasing..."
-              : "✓ Release to Production"}
+              : released
+                ? "✓ Released to Production"
+                : "✓ Release to Production"}
           </button>
+
+          {/* DOWNLOAD QR CUTLIST */}
+
+          <button
+            type="button"
+            className={
+              released
+                ? "primary-button"
+                : "secondary-button"
+            }
+            disabled={
+              importing ||
+              !importRows.length ||
+              !released
+            }
+            onClick={
+              downloadQrCutlist
+            }
+            style={
+              released
+                ? {
+                    boxShadow:
+                      "0 0 0 3px rgba(37, 99, 235, 0.12)",
+                  }
+                : undefined
+            }
+          >
+            ↓ Download QR Cutlist
+          </button>
+
+          {/* CLEAR */}
+
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={
+              importing
+            }
+            onClick={
+              clearCutlist
+            }
+          >
+            Clear
+          </button>
+
         </div>
 
-        {!selectedSite && importRows.length > 0 && (
-          <div className="alert error-alert" style={{ marginTop: "14px" }}>
-            Select a site before releasing the cutlist.
+        {/* VALIDATION MESSAGE */}
+
+        {!siteName.trim() && (
+          <p
+            style={{
+              margin:
+                "13px 0 0",
+              color:
+                "#b45309",
+              fontSize:
+                "13px",
+            }}
+          >
+            Enter the new site name
+            first.
+          </p>
+        )}
+
+        {siteName.trim() &&
+          !clientName.trim() && (
+            <p
+              style={{
+                margin:
+                  "13px 0 0",
+                color:
+                  "#b45309",
+                fontSize:
+                  "13px",
+              }}
+            >
+              Enter the client name
+              before releasing.
+            </p>
+          )}
+
+        {clientName.trim() &&
+          !importRows.length && (
+            <p
+              style={{
+                margin:
+                  "13px 0 0",
+                color:
+                  "#b45309",
+                fontSize:
+                  "13px",
+              }}
+            >
+              Upload the Excel cutlist
+              before releasing.
+            </p>
+          )}
+
+        {/* AFTER RELEASE */}
+
+        {released && (
+          <div
+            style={{
+              marginTop:
+                "15px",
+              padding:
+                "13px 15px",
+              border:
+                "1px solid #bfdbfe",
+              background:
+                "#eff6ff",
+              borderRadius:
+                "8px",
+              color:
+                "#1e40af",
+              fontSize:
+                "13px",
+            }}
+          >
+            <strong>
+              Production released.
+            </strong>{" "}
+            The site and panels are now
+            available in the Dashboard
+            and QR Tracking.
           </div>
         )}
+
+      </section>
+
+      {/* ==================================================
+          5. EXISTING SITE
+      ================================================== */}
+
+      <section
+        style={{
+          marginTop:
+            "18px",
+          padding:
+            "14px 16px",
+          color:
+            "#6b7280",
+          fontSize:
+            "13px",
+          textAlign:
+            "center",
+        }}
+      >
+        Need to work with an existing
+        project?{" "}
+
+        <button
+          type="button"
+          onClick={() =>
+            setActivePage(
+              "sites"
+            )
+          }
+          style={{
+            border:
+              "none",
+            background:
+              "transparent",
+            color:
+              "#2563eb",
+            fontWeight:
+              "700",
+            cursor:
+              "pointer",
+          }}
+        >
+          Open Sites
+        </button>
+
       </section>
     </>
   );
 }
 
 /* =========================================================
-   REPORTS PAGE
+   REPORTS
 ========================================================= */
 
 function ReportsPage({
@@ -4075,110 +4428,269 @@ function ReportsPage({
   getSiteProgress,
   isPanelPacked,
 }) {
-  const totalQuantity = panels.reduce(
-    (sum, panel) => sum + Number(panel.quantity || 1),
-    0
-  );
+  const totalQuantity =
+    panels.reduce(
+      (sum, panel) =>
+        sum +
+        Number(
+          panel.quantity || 1
+        ),
+      0
+    );
 
-  const packedQuantity = panels.reduce(
-    (sum, panel) =>
-      sum +
-      (isPanelPacked(panel) ? Number(panel.quantity || 1) : 0),
-    0
-  );
+  const packedQuantity =
+    panels.reduce(
+      (sum, panel) =>
+        sum +
+        (isPanelPacked(
+          panel
+        )
+          ? Number(
+              panel.quantity ||
+                1
+            )
+          : 0),
+      0
+    );
 
-  const pendingQuantity = Math.max(
-    totalQuantity - packedQuantity,
-    0
-  );
+  const pendingQuantity =
+    Math.max(
+      totalQuantity -
+        packedQuantity,
+      0
+    );
 
   return (
     <>
+
       <header className="topbar">
+
         <div>
-          <p className="eyebrow">TRACKERZ PRODUCTION</p>
-          <h2>Reports</h2>
-          <p className="subtitle">
-            Production summary from the Supabase sites and panels tables.
+
+          <p className="eyebrow">
+            TRACKERZ PRODUCTION
           </p>
+
+          <h2>
+            Reports
+          </h2>
+
+          <p className="subtitle">
+            Production summary from
+            Supabase sites and panels.
+          </p>
+
         </div>
+
       </header>
 
       <div className="stats-grid">
+
         <div className="stat-card">
-          <div className="stat-icon">⌂</div>
-          <div>
-            <span>Total Sites</span>
-            <strong>{sites.length}</strong>
+
+          <div className="stat-icon">
+            ⌂
           </div>
+
+          <div>
+
+            <span>
+              Total Sites
+            </span>
+
+            <strong>
+              {sites.length}
+            </strong>
+
+          </div>
+
         </div>
 
         <div className="stat-card">
-          <div className="stat-icon">▤</div>
-          <div>
-            <span>Total Panels</span>
-            <strong>{totalQuantity}</strong>
+
+          <div className="stat-icon">
+            ▤
           </div>
+
+          <div>
+
+            <span>
+              Total Panels
+            </span>
+
+            <strong>
+              {totalQuantity}
+            </strong>
+
+          </div>
+
         </div>
 
         <div className="stat-card">
-          <div className="stat-icon">✓</div>
-          <div>
-            <span>Packed</span>
-            <strong>{packedQuantity}</strong>
+
+          <div className="stat-icon">
+            ✓
           </div>
+
+          <div>
+
+            <span>
+              Packed
+            </span>
+
+            <strong>
+              {packedQuantity}
+            </strong>
+
+          </div>
+
         </div>
 
         <div className="stat-card">
-          <div className="stat-icon">!</div>
-          <div>
-            <span>Balance</span>
-            <strong>{pendingQuantity}</strong>
+
+          <div className="stat-icon">
+            !
           </div>
+
+          <div>
+
+            <span>
+              Balance
+            </span>
+
+            <strong>
+              {pendingQuantity}
+            </strong>
+
+          </div>
+
         </div>
+
       </div>
 
       <section className="panel">
+
         <div className="section-header">
+
           <div>
-            <h2>Site Production Report</h2>
-            <p>Current panel progress for every site.</p>
+
+            <h2>
+              Site Production Report
+            </h2>
+
+            <p>
+              Current panel progress
+              for every site.
+            </p>
+
           </div>
+
         </div>
 
         <div className="panel-table-wrapper">
-          <table className="panel-table">
-            <thead>
-              <tr>
-                <th>Site</th>
-                <th>Client</th>
-                <th>Total</th>
-                <th>Packed</th>
-                <th>Balance</th>
-                <th>Progress</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sites.map((site) => {
-                const progress = getSiteProgress(site);
 
-                return (
-                  <tr key={site.id}>
-                    <td>
-                      <strong>{site.site_name}</strong>
-                    </td>
-                    <td>{site.client_name || "—"}</td>
-                    <td>{progress.total}</td>
-                    <td>{progress.packed}</td>
-                    <td>{progress.balance}</td>
-                    <td>{progress.percentage}%</td>
-                  </tr>
-                );
-              })}
+          <table className="panel-table">
+
+            <thead>
+
+              <tr>
+
+                <th>
+                  Site
+                </th>
+
+                <th>
+                  Client
+                </th>
+
+                <th>
+                  Total
+                </th>
+
+                <th>
+                  Packed
+                </th>
+
+                <th>
+                  Balance
+                </th>
+
+                <th>
+                  Progress
+                </th>
+
+              </tr>
+
+            </thead>
+
+            <tbody>
+
+              {sites.map(
+                (site) => {
+                  const progress =
+                    getSiteProgress(
+                      site
+                    );
+
+                  return (
+                    <tr
+                      key={
+                        site.id
+                      }
+                    >
+
+                      <td>
+                        <strong>
+                          {
+                            site.site_name
+                          }
+                        </strong>
+                      </td>
+
+                      <td>
+                        {
+                          site.client_name ||
+                          "—"
+                        }
+                      </td>
+
+                      <td>
+                        {
+                          progress.total
+                        }
+                      </td>
+
+                      <td>
+                        {
+                          progress.packed
+                        }
+                      </td>
+
+                      <td>
+                        {
+                          progress.balance
+                        }
+                      </td>
+
+                      <td>
+                        {
+                          progress.percentage
+                        }%
+                      </td>
+
+                    </tr>
+                  );
+                }
+              )}
+
             </tbody>
+
           </table>
+
         </div>
+
       </section>
+
     </>
   );
 }
@@ -4232,6 +4744,7 @@ function SiteCard({
       <div className="site-card-info">
 
         <div>
+
           <span>
             Panels
           </span>
@@ -4239,9 +4752,11 @@ function SiteCard({
           <strong>
             {panelCount}
           </strong>
+
         </div>
 
         <div>
+
           <span>
             Contact
           </span>
@@ -4250,13 +4765,16 @@ function SiteCard({
             {site.contact ||
               "-"}
           </strong>
+
         </div>
 
       </div>
 
       <button
         className="site-open-button"
-        onClick={onOpen}
+        onClick={
+          onOpen
+        }
       >
         Open Site →
       </button>
