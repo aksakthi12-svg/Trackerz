@@ -1,13 +1,33 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "./supabaseClient";
 
-function QRTracking() {
-  // =========================================================
-  // STATE
-  // =========================================================
+/*
+ * Trackerz QR Tracking
+ *
+ * UI revision:
+ * - READY packets shown first
+ * - DISPATCHED packets shown below
+ * - 3 packet columns
+ * - Packet cards show packet number + status only
+ * - Packet QR is NOT displayed in the packet card
+ * - Opening a packet shows details + Print Packet QR button
+ * - Closing a packet automatically opens printing
+ *
+ * DATABASE LOGIC:
+ * - No database structure changes
+ * - Existing Supabase authentication retained
+ * - Existing RLS retained
+ * - Existing company separation retained
+ * - Existing sites table retained
+ * - Existing panels table retained
+ * - Existing packets table retained
+ * - Existing packet_panels table retained
+ */
 
+function QRTracking() {
   const [sites, setSites] = useState([]);
   const [panels, setPanels] = useState([]);
+  const [allPackets, setAllPackets] = useState([]);
 
   const [selectedSiteId, setSelectedSiteId] = useState("");
 
@@ -15,13 +35,12 @@ function QRTracking() {
 
   const [manualQR, setManualQR] = useState("");
 
-  // Current OPEN packet from Supabase
   const [openPacket, setOpenPacket] = useState(null);
 
-  // CLOSED packets from Supabase
   const [closedPackets, setClosedPackets] = useState([]);
 
   const [selectedPacketId, setSelectedPacketId] = useState(null);
+
   const [selectedPanelId, setSelectedPanelId] = useState(null);
 
   const [message, setMessage] = useState("");
@@ -30,14 +49,11 @@ function QRTracking() {
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
 
-  // Packet label data shown immediately after a packet is closed.
-  const [packetPrintData, setPacketPrintData] = useState(null);
-
   const inputRef = useRef(null);
 
-  // =========================================================
-  // MESSAGE
-  // =========================================================
+  /* =========================================================
+     MESSAGE
+  ========================================================= */
 
   const showMessage = (text, type = "success") => {
     setMessage(text);
@@ -50,38 +66,82 @@ function QRTracking() {
     }, 3000);
   };
 
-  // =========================================================
-  // SITE NAME
-  // =========================================================
+  /* =========================================================
+     BASIC HELPERS
+  ========================================================= */
 
-  const getSiteName = (site) => {
+  const getSiteName = (site) =>
+    site?.site_name ||
+    site?.siteName ||
+    site?.name ||
+    "Unnamed Site";
+
+  const getClientName = (site) =>
+    site?.client_name ||
+    site?.clientName ||
+    site?.customer ||
+    "Client";
+
+  const getPacketStatus = (packet) =>
+    String(packet?.status || "")
+      .trim()
+      .toLowerCase();
+
+  const isPacketOpen = (packet) =>
+    getPacketStatus(packet) === "open";
+
+  const isPacketDispatched = (packet) => {
+    const status = getPacketStatus(packet);
+
     return (
-      site?.site_name ||
-      site?.siteName ||
-      site?.name ||
-      "Unnamed Site"
+      status === "dispatched" ||
+      status === "dispatch" ||
+      status === "delivered"
     );
   };
 
-  // =========================================================
-  // CLIENT NAME
-  // =========================================================
+  const isPacketClosed = (packet) => {
+    const status = getPacketStatus(packet);
 
-  const getClientName = (site) => {
     return (
-      site?.client_name ||
-      site?.clientName ||
-      site?.customer ||
-      "Client"
+      status === "closed" ||
+      status === "packed" ||
+      status === "ready"
     );
   };
 
-  // =========================================================
-  // PANEL STATUS
-  // =========================================================
+  const getDispatchTimestamp = (packet) =>
+    packet?.dispatched_at ||
+    packet?.dispatch_at ||
+    packet?.dispatch_timestamp ||
+    packet?.dispatchedAt ||
+    packet?.dispatchAt ||
+    null;
 
-  const getPanelStatus = (panel) => {
-    return String(
+  const formatDateTime = (value) => {
+    if (!value) return "";
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+      return String(value);
+    }
+
+    return date.toLocaleString([], {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  };
+
+  /* =========================================================
+     PANEL HELPERS
+  ========================================================= */
+
+  const getPanelStatus = (panel) =>
+    String(
       panel?.status ||
         panel?.production_status ||
         panel?.productionStatus ||
@@ -91,11 +151,6 @@ function QRTracking() {
     )
       .trim()
       .toLowerCase();
-  };
-
-  // =========================================================
-  // PACKED CHECK
-  // =========================================================
 
   const isPanelPacked = (panel) => {
     const status = getPanelStatus(panel);
@@ -111,153 +166,68 @@ function QRTracking() {
     );
   };
 
-  // =========================================================
-  // PANEL LABEL
-  // =========================================================
+  const getPanelLabel = (panel, index = 0) =>
+    panel?.qr_data ||
+    panel?.qrData ||
+    panel?.qr_code ||
+    panel?.qrCode ||
+    panel?.panel_name ||
+    panel?.panelName ||
+    panel?.panel_id ||
+    panel?.panelId ||
+    panel?.id ||
+    `Panel ${index + 1}`;
 
-  const getPanelLabel = (panel, index = 0) => {
-    return (
-      panel?.qr_data ||
-      panel?.qrData ||
-      panel?.qr_code ||
-      panel?.qrCode ||
-      panel?.panel_name ||
-      panel?.panelName ||
-      panel?.panel_id ||
-      panel?.panelId ||
-      panel?.id ||
-      `Panel ${index + 1}`
-    );
-  };
+  const getPanelLength = (panel) =>
+    panel?.length ??
+    panel?.fb_length ??
+    panel?.fbLength ??
+    "-";
 
-  // =========================================================
-  // PANEL DESCRIPTION
-  // =========================================================
+  const getPanelWidth = (panel) =>
+    panel?.width ??
+    panel?.fb_width ??
+    panel?.fbWidth ??
+    "-";
 
-  const getPanelDescription = (panel) => {
-    const parts = [];
+  const getPanelThickness = (panel) =>
+    panel?.thickness ??
+    panel?.thk ??
+    "-";
 
-    if (panel?.material) {
-      parts.push(panel.material);
-    }
+  const getPanelRemarks = (panel) =>
+    panel?.remarks ??
+    panel?.remark ??
+    panel?.notes ??
+    panel?.note ??
+    panel?.comments ??
+    "";
 
-    if (
-      panel?.length !== undefined &&
-      panel?.length !== null &&
-      panel?.length !== ""
-    ) {
-      parts.push(`${panel.length} mm`);
-    }
+  const getPanelNameForPrint = (panel) =>
+    panel?.fb_name ||
+    panel?.panel_name ||
+    panel?.panelName ||
+    panel?.name ||
+    getPanelLabel(panel) ||
+    "Panel";
 
-    if (
-      panel?.width !== undefined &&
-      panel?.width !== null &&
-      panel?.width !== ""
-    ) {
-      parts.push(`${panel.width} mm`);
-    }
+  const getPanelSectionForPrint = (panel) =>
+    panel?.section_name ||
+    panel?.sectionName ||
+    panel?.section ||
+    "-";
 
-    if (
-      panel?.thickness !== undefined &&
-      panel?.thickness !== null &&
-      panel?.thickness !== ""
-    ) {
-      parts.push(`${panel.thickness} mm`);
-    }
+  const getPanelLabelNumberForPrint = (panel) =>
+    panel?.assembly_label ||
+    panel?.assemblyLabel ||
+    panel?.label_number ||
+    panel?.labelNumber ||
+    panel?.barcode ||
+    "-";
 
-    if (panel?.description) {
-      parts.push(panel.description);
-    }
-
-    return parts.join(" • ");
-  };
-
-  // =========================================================
-  // PACKET PANEL PRINT DETAILS
-  // =========================================================
-
-  const getPanelNameForPrint = (panel) => {
-    return (
-      panel?.fb_name ||
-      panel?.panel_name ||
-      panel?.panelName ||
-      panel?.name ||
-      getPanelLabel(panel) ||
-      "Panel"
-    );
-  };
-
-  const getPanelSectionForPrint = (panel) => {
-    return (
-      panel?.section_name ||
-      panel?.sectionName ||
-      panel?.section ||
-      "-"
-    );
-  };
-
-  const getPanelLabelNumberForPrint = (panel) => {
-    return (
-      panel?.assembly_label ||
-      panel?.assemblyLabel ||
-      panel?.label_number ||
-      panel?.labelNumber ||
-      panel?.barcode ||
-      "-"
-    );
-  };
-
-  const getPanelLengthForPrint = (panel) => {
-    return (
-      panel?.length_num ??
-      panel?.length ??
-      panel?.fb_length ??
-      panel?.fbLength ??
-      "-"
-    );
-  };
-
-  const getPanelWidthForPrint = (panel) => {
-    return (
-      panel?.width_num ??
-      panel?.width ??
-      panel?.fb_width ??
-      panel?.fbWidth ??
-      "-"
-    );
-  };
-
-  const getPanelThicknessForPrint = (panel) => {
-    return (
-      panel?.thickness_num ??
-      panel?.thickness ??
-      panel?.thk ??
-      "-"
-    );
-  };
-
-  // =========================================================
-  // GENERATE PACKET CODE
-  //
-  // IMPORTANT:
-  // Packet numbering is now INDEPENDENT FOR EACH SITE.
-  //
-  // Examples:
-  //
-  // Siva kitchen:
-  // PKT-SIVA-KITCHEN-0001
-  // PKT-SIVA-KITCHEN-0002
-  //
-  // EA Units:
-  // PKT-EA-UNITS-0001
-  // PKT-EA-UNITS-0002
-  //
-  // AG 2:
-  // PKT-AG-2-0001
-  // PKT-AG-2-0002
-  //
-  // Existing random packet numbers are ignored.
-  // =========================================================
+  /* =========================================================
+     PACKET NUMBER
+  ========================================================= */
 
   const getNextPacketCode = async (siteId) => {
     if (!siteId) {
@@ -266,144 +236,80 @@ function QRTracking() {
       );
     }
 
-    // -------------------------------------------------------
-    // GET SITE NAME
-    // -------------------------------------------------------
-
-    const {
-      data: site,
-      error: siteError,
-    } = await supabase
+    const { data: site, error: siteError } = await supabase
       .from("sites")
       .select("site_name")
       .eq("id", siteId)
       .single();
 
-    if (siteError) {
-      console.error(
-        "Get site name for packet error:",
-        siteError
-      );
+    if (siteError) throw siteError;
 
-      throw siteError;
-    }
-
-    // -------------------------------------------------------
-    // CREATE SAFE SITE PREFIX
-    // -------------------------------------------------------
-
-    const sitePrefix = String(
-      site?.site_name || "SITE"
-    )
+    const sitePrefix = String(site?.site_name || "SITE")
       .trim()
       .toUpperCase()
       .replace(/[^A-Z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "");
 
-    // -------------------------------------------------------
-    // GET PACKETS FOR THIS SITE ONLY
-    // -------------------------------------------------------
-
-    const {
-      data,
-      error,
-    } = await supabase
+    const { data, error } = await supabase
       .from("packets")
       .select("packet_code")
       .eq("site_id", siteId);
 
-    if (error) {
-      console.error(
-        "Get next packet number error:",
-        error
-      );
-
-      throw error;
-    }
-
-    // -------------------------------------------------------
-    // FIND HIGHEST NUMBER FOR THIS SITE
-    // -------------------------------------------------------
+    if (error) throw error;
 
     let highestNumber = 0;
 
-    (Array.isArray(data) ? data : []).forEach(
-      (row) => {
-        const code = String(
-          row?.packet_code || ""
-        ).trim();
-
-        const escapedPrefix =
-          sitePrefix.replace(
-            /[.*+?^${}()|[\]\\]/g,
-            "\\$&"
-          );
-
-        const regex = new RegExp(
-          `^PKT-${escapedPrefix}-(\\d{4})$`
-        );
-
-        const match = code.match(regex);
-
-        if (match) {
-          const number = Number(
-            match[1]
-          );
-
-          if (
-            Number.isFinite(number) &&
-            number > highestNumber
-          ) {
-            highestNumber = number;
-          }
-        }
-      }
+    const escapedPrefix = sitePrefix.replace(
+      /[.*+?^${}()|[\]\\]/g,
+      "\\$&"
     );
 
-    // -------------------------------------------------------
-    // CREATE NEXT PACKET NUMBER
-    // -------------------------------------------------------
+    const regex = new RegExp(
+      `^PKT-${escapedPrefix}-(\\d{4})$`
+    );
 
-    const nextNumber =
-      highestNumber + 1;
+    (Array.isArray(data) ? data : []).forEach((row) => {
+      const match = String(row?.packet_code || "")
+        .trim()
+        .match(regex);
+
+      if (match) {
+        const number = Number(match[1]);
+
+        if (
+          Number.isFinite(number) &&
+          number > highestNumber
+        ) {
+          highestNumber = number;
+        }
+      }
+    });
 
     return `PKT-${sitePrefix}-${String(
-      nextNumber
+      highestNumber + 1
     ).padStart(4, "0")}`;
   };
 
-  // =========================================================
-  // LOAD SITES + PANELS
-  // =========================================================
+  /* =========================================================
+     LOAD SITES + PANELS
+  ========================================================= */
 
   const loadBaseData = async () => {
-    const {
-      data: sitesData,
-      error: sitesError,
-    } = await supabase
-      .from("sites")
-      .select("*")
-      .order("id", {
-        ascending: true,
-      });
+    const { data: sitesData, error: sitesError } =
+      await supabase
+        .from("sites")
+        .select("*")
+        .order("id", { ascending: true });
 
-    if (sitesError) {
-      throw sitesError;
-    }
+    if (sitesError) throw sitesError;
 
-    const {
-      data: panelsData,
-      error: panelsError,
-    } = await supabase
-      .from("panels")
-      .select("*")
-      .order("id", {
-        ascending: true,
-      });
+    const { data: panelsData, error: panelsError } =
+      await supabase
+        .from("panels")
+        .select("*")
+        .order("id", { ascending: true });
 
-    if (panelsError) {
-      throw panelsError;
-    }
+    if (panelsError) throw panelsError;
 
     return {
       sites: Array.isArray(sitesData)
@@ -416,132 +322,103 @@ function QRTracking() {
     };
   };
 
-  // =========================================================
-  // LOAD PACKETS FOR SELECTED SITE
-  // =========================================================
+  /* =========================================================
+     LOAD PACKETS FOR SELECTED SITE
+  ========================================================= */
 
   const loadPacketsForSite = async (siteId) => {
     if (!siteId) {
       setOpenPacket(null);
       setClosedPackets([]);
+      setAllPackets([]);
       return;
     }
 
-    // -------------------------------------------------------
-    // LOAD PACKETS
-    // -------------------------------------------------------
+    const { data: packetRows, error: packetError } =
+      await supabase
+        .from("packets")
+        .select("*")
+        .eq("site_id", siteId)
+        .order("id", { ascending: false });
 
-    const {
-      data: packetRows,
-      error: packetError,
-    } = await supabase
-      .from("packets")
-      .select("*")
-      .eq("site_id", siteId)
-      .order("id", {
-        ascending: false,
-      });
-
-    if (packetError) {
-      throw packetError;
-    }
+    if (packetError) throw packetError;
 
     const safePackets = Array.isArray(packetRows)
       ? packetRows
       : [];
 
-    // -------------------------------------------------------
-    // LOAD PACKET/PANEL RELATIONSHIPS
-    // -------------------------------------------------------
+    let relationRows = [];
 
-    let packetPanelRows = [];
-
-    if (safePackets.length > 0) {
+    if (safePackets.length) {
       const packetIds = safePackets.map(
         (packet) => packet.id
       );
 
-      const {
-        data: relationRows,
-        error: relationError,
-      } = await supabase
+      const { data, error } = await supabase
         .from("packet_panels")
         .select("*")
         .in("packet_id", packetIds);
 
-      if (relationError) {
-        throw relationError;
-      }
+      if (error) throw error;
 
-      packetPanelRows = Array.isArray(relationRows)
-        ? relationRows
+      relationRows = Array.isArray(data)
+        ? data
         : [];
     }
 
-    // -------------------------------------------------------
-    // BUILD PACKET OBJECTS
-    // -------------------------------------------------------
+    const packetObjects = safePackets.map((packet) => {
+      const relations = relationRows.filter(
+        (row) =>
+          String(row.packet_id) ===
+          String(packet.id)
+      );
 
-    const packetObjects = safePackets.map(
-      (packet) => {
-        const relations = packetPanelRows.filter(
-          (row) =>
-            String(row.packet_id) ===
-            String(packet.id)
+      const panelIds = relations
+        .map((row) => row.panel_id)
+        .filter(
+          (id) =>
+            id !== null &&
+            id !== undefined
         );
 
-        const panelIds = relations
-          .map((row) => row.panel_id)
-          .filter(
-            (id) =>
-              id !== null &&
-              id !== undefined
-          );
+      return {
+        ...packet,
 
-        return {
-          ...packet,
+        dbId: packet.id,
 
-          dbId: packet.id,
+        id:
+          packet.packet_code ||
+          `PKT-${packet.id}`,
 
-          id:
-            packet.packet_code ||
-            `PKT-${packet.id}`,
+        packetId: packet.id,
 
-          packetId: packet.id,
+        panelIds,
 
-          panelIds,
+        panelQRs: relations
+          .map((row) => row.qr_data)
+          .filter(Boolean),
+      };
+    });
 
-          panelQRs: relations
-            .map(
-              (row) =>
-                row.qr_data
-            )
-            .filter(Boolean),
-        };
-      }
+    setAllPackets(packetObjects);
+
+    setOpenPacket(
+      packetObjects.find(isPacketOpen) ||
+        null
     );
 
-    const open = packetObjects.find(
-      (packet) =>
-        String(packet.status || "")
-          .trim()
-          .toLowerCase() === "open"
+    setClosedPackets(
+      packetObjects.filter(
+        (packet) =>
+          isPacketClosed(packet) ||
+          isPacketDispatched(packet)
+      )
     );
-
-    const closed = packetObjects.filter(
-      (packet) =>
-        String(packet.status || "")
-          .trim()
-          .toLowerCase() === "closed"
-    );
-
-    setOpenPacket(open || null);
-    setClosedPackets(closed);
   };
 
-  // =========================================================
-  // FULL LOAD
-  // =========================================================
+  /* =========================================================
+     LOAD EVERYTHING
+  ========================================================= */
 
   const loadData = async (
     keepSelectedSite = true
@@ -554,44 +431,44 @@ function QRTracking() {
         panels: panelsData,
       } = await loadBaseData();
 
-      console.log(
-        "TRACKERZ QR - SUPABASE SITES:",
-        sitesData
-      );
-
-      console.log(
-        "TRACKERZ QR - SUPABASE PANELS:",
-        panelsData
-      );
-
       setSites(sitesData);
       setPanels(panelsData);
 
       let siteToUse = selectedSiteId;
 
-      if (keepSelectedSite && siteToUse) {
-        const stillExists = sitesData.some(
-          (site) =>
-            String(site.id) ===
-            String(siteToUse)
-        );
+      if (
+        keepSelectedSite &&
+        siteToUse
+      ) {
+        const stillExists =
+          sitesData.some(
+            (site) =>
+              String(site.id) ===
+              String(siteToUse)
+          );
 
         if (!stillExists) {
           siteToUse =
-            sitesData.length > 0
+            sitesData.length
               ? String(sitesData[0].id)
               : "";
         }
       }
 
-      if (!siteToUse && sitesData.length > 0) {
-        siteToUse = String(sitesData[0].id);
+      if (
+        !siteToUse &&
+        sitesData.length
+      ) {
+        siteToUse = String(
+          sitesData[0].id
+        );
       }
 
       if (!siteToUse) {
         setSelectedSiteId("");
         setOpenPacket(null);
         setClosedPackets([]);
+        setAllPackets([]);
         return;
       }
 
@@ -602,7 +479,9 @@ function QRTracking() {
         setSelectedSiteId(siteToUse);
       }
 
-      await loadPacketsForSite(siteToUse);
+      await loadPacketsForSite(
+        siteToUse
+      );
     } catch (error) {
       console.error(
         "Trackerz QR Tracking load error:",
@@ -619,24 +498,18 @@ function QRTracking() {
     }
   };
 
-  // =========================================================
-  // INITIAL LOAD
-  // =========================================================
-
   useEffect(() => {
     loadData(false);
   }, []);
 
-  // =========================================================
-  // RELOAD PACKETS WHEN SITE CHANGES
-  // =========================================================
+  /* =========================================================
+     SITE CHANGE
+  ========================================================= */
 
   useEffect(() => {
-    if (!selectedSiteId) {
-      return;
-    }
+    if (!selectedSiteId) return;
 
-    const reloadSitePackets = async () => {
+    const reload = async () => {
       try {
         await loadPacketsForSite(
           selectedSiteId
@@ -660,12 +533,12 @@ function QRTracking() {
       }
     };
 
-    reloadSitePackets();
+    reload();
   }, [selectedSiteId]);
 
-  // =========================================================
-  // WINDOW FOCUS REFRESH
-  // =========================================================
+  /* =========================================================
+     REFRESH WHEN WINDOW FOCUS RETURNS
+  ========================================================= */
 
   useEffect(() => {
     const refresh = async () => {
@@ -685,7 +558,7 @@ function QRTracking() {
         }
       } catch (error) {
         console.error(
-          "Window refresh error:",
+          "Trackerz refresh error:",
           error
         );
       }
@@ -696,46 +569,12 @@ function QRTracking() {
       refresh
     );
 
-    return () => {
-      window.removeEventListener(
-        "focus",
-        refresh
-      );
-    };
-  }, [selectedSiteId]);
-
-  // =========================================================
-  // VISIBILITY REFRESH
-  // =========================================================
-
-  useEffect(() => {
-    const handleVisibility = async () => {
+    const handleVisibility = () => {
       if (
-        document.visibilityState !==
+        document.visibilityState ===
         "visible"
       ) {
-        return;
-      }
-
-      try {
-        const {
-          sites: sitesData,
-          panels: panelsData,
-        } = await loadBaseData();
-
-        setSites(sitesData);
-        setPanels(panelsData);
-
-        if (selectedSiteId) {
-          await loadPacketsForSite(
-            selectedSiteId
-          );
-        }
-      } catch (error) {
-        console.error(
-          "Visibility refresh error:",
-          error
-        );
+        refresh();
       }
     };
 
@@ -745,6 +584,11 @@ function QRTracking() {
     );
 
     return () => {
+      window.removeEventListener(
+        "focus",
+        refresh
+      );
+
       document.removeEventListener(
         "visibilitychange",
         handleVisibility
@@ -752,100 +596,105 @@ function QRTracking() {
     };
   }, [selectedSiteId]);
 
-  // =========================================================
-  // SELECTED SITE
-  // =========================================================
+  /* =========================================================
+     SELECTED SITE
+  ========================================================= */
 
-  const selectedSite = useMemo(() => {
-    return sites.find(
-      (site) =>
-        String(site.id) ===
-        String(selectedSiteId)
-    );
-  }, [
-    sites,
-    selectedSiteId,
-  ]);
+  const selectedSite = useMemo(
+    () =>
+      sites.find(
+        (site) =>
+          String(site.id) ===
+          String(selectedSiteId)
+      ),
+    [sites, selectedSiteId]
+  );
 
-  // =========================================================
-  // SITE PANELS
-  // =========================================================
+  /* =========================================================
+     SITE PANELS
+  ========================================================= */
 
   const sitePanels = useMemo(() => {
-    if (!selectedSite) {
-      return [];
-    }
+    if (!selectedSite) return [];
 
-    const siteId =
-      String(selectedSite.id);
+    const siteId = String(
+      selectedSite.id
+    );
 
-    const siteName =
-      getSiteName(selectedSite)
+    const siteName = getSiteName(
+      selectedSite
+    )
+      .trim()
+      .toLowerCase();
+
+    return panels.filter((panel) => {
+      const panelSiteId = String(
+        panel?.site_id ||
+          panel?.siteId ||
+          ""
+      );
+
+      const panelSiteName = String(
+        panel?.site_name ||
+          panel?.siteName ||
+          ""
+      )
         .trim()
         .toLowerCase();
 
-    return panels.filter(
-      (panel) => {
-        const panelSiteId =
-          String(
-            panel?.site_id ||
-              panel?.siteId ||
-              ""
-          );
-
-        const panelSiteName =
-          String(
-            panel?.site_name ||
-              panel?.siteName ||
-              ""
-          )
-            .trim()
-            .toLowerCase();
-
-        if (
-          panelSiteId &&
-          panelSiteId === siteId
-        ) {
-          return true;
-        }
-
-        if (
-          !panelSiteId &&
-          panelSiteName &&
-          panelSiteName === siteName
-        ) {
-          return true;
-        }
-
-        return false;
+      if (
+        panelSiteId &&
+        panelSiteId === siteId
+      ) {
+        return true;
       }
-    );
-  }, [
-    panels,
-    selectedSite,
-  ]);
 
-  // =========================================================
-  // PACKED / REMAINING
-  // =========================================================
+      return (
+        !panelSiteId &&
+        panelSiteName &&
+        panelSiteName === siteName
+      );
+    });
+  }, [panels, selectedSite]);
 
-  const packedPanels = useMemo(() => {
-    return sitePanels.filter(
-      (panel) =>
-        isPanelPacked(panel)
-    );
-  }, [sitePanels]);
+  /* =========================================================
+     COUNTS
+  ========================================================= */
 
-  const remainingPanels = useMemo(() => {
-    return sitePanels.filter(
-      (panel) =>
-        !isPanelPacked(panel)
-    );
-  }, [sitePanels]);
+  const packedPanels = useMemo(
+    () =>
+      sitePanels.filter(
+        isPanelPacked
+      ),
+    [sitePanels]
+  );
 
-  // =========================================================
-  // PROGRESS
-  // =========================================================
+  const remainingPanels = useMemo(
+    () =>
+      sitePanels.filter(
+        (panel) =>
+          !isPanelPacked(panel)
+      ),
+    [sitePanels]
+  );
+
+  const dispatchedPackets = useMemo(
+    () =>
+      allPackets.filter(
+        isPacketDispatched
+      ),
+    [allPackets]
+  );
+
+  const readyPackets = useMemo(
+    () =>
+      allPackets.filter(
+        (packet) =>
+          isPacketClosed(packet) &&
+          !isPacketDispatched(packet)
+      ),
+    [allPackets]
+  );
 
   const totalPanels =
     sitePanels.length;
@@ -856,39 +705,44 @@ function QRTracking() {
   const remainingCount =
     remainingPanels.length;
 
-  const progress =
-    totalPanels > 0
-      ? Math.min(
-          100,
-          Math.round(
-            (packedCount /
-              totalPanels) *
-              100
-          )
-        )
-      : 0;
+  const totalPackets =
+    allPackets.length;
 
-  // =========================================================
-  // FIND PANEL BY QR
-  // =========================================================
+  const dispatchedPacketCount =
+    dispatchedPackets.length;
+
+  const readyPacketCount =
+    readyPackets.length;
+
+  const progress = totalPanels
+    ? Math.min(
+        100,
+        Math.round(
+          (packedCount /
+            totalPanels) *
+            100
+        )
+      )
+    : 0;
+
+  /* =========================================================
+     FIND PANEL BY QR
+  ========================================================= */
 
   const findPanelByQR = (
     qrValue
   ) => {
-    const value =
-      String(
-        qrValue || ""
-      )
-        .trim()
-        .toLowerCase();
+    const value = String(
+      qrValue || ""
+    )
+      .trim()
+      .toLowerCase();
 
-    if (!value) {
-      return null;
-    }
+    if (!value) return null;
 
     return sitePanels.find(
-      (panel) => {
-        const values = [
+      (panel) =>
+        [
           panel?.qr_data,
           panel?.qrData,
           panel?.qr_code,
@@ -899,22 +753,19 @@ function QRTracking() {
           panel?.panel_id,
           panel?.panelId,
           panel?.id,
-        ];
-
-        return values.some(
+        ].some(
           (item) =>
             String(item || "")
               .trim()
               .toLowerCase() ===
             value
-        );
-      }
+        )
     );
   };
 
-  // =========================================================
-  // CREATE OPEN PACKET IN SUPABASE
-  // =========================================================
+  /* =========================================================
+     CREATE OPEN PACKET
+  ========================================================= */
 
   const createOpenPacket = async () => {
     if (!selectedSite) {
@@ -946,31 +797,21 @@ function QRTracking() {
           packet_code:
             packetCode,
 
-          // The packet QR value is the same unique packet code.
           packet_qr:
             packetCode,
 
-          status:
-            "open",
+          status: "open",
 
           opened_at:
             new Date().toISOString(),
 
-          closed_at:
-            null,
+          closed_at: null,
         },
       ])
       .select()
       .single();
 
-    if (error) {
-      console.error(
-        "Create packet error:",
-        error
-      );
-
-      throw error;
-    }
+    if (error) throw error;
 
     return {
       ...data,
@@ -989,9 +830,9 @@ function QRTracking() {
     };
   };
 
-  // =========================================================
-  // ADD PANEL TO SUPABASE PACKET
-  // =========================================================
+  /* =========================================================
+     ADD PANEL TO PACKET
+  ========================================================= */
 
   const addPanelToPacket = async (
     packetDbId,
@@ -1018,21 +859,14 @@ function QRTracking() {
       .select()
       .single();
 
-    if (error) {
-      console.error(
-        "Add panel to packet error:",
-        error
-      );
-
-      throw error;
-    }
+    if (error) throw error;
 
     return data;
   };
 
-  // =========================================================
-  // UPDATE PANEL IN SUPABASE
-  // =========================================================
+  /* =========================================================
+     UPDATE PANEL
+  ========================================================= */
 
   const updatePanelInSupabase = async (
     panelId,
@@ -1048,532 +882,764 @@ function QRTracking() {
       .select()
       .single();
 
-    if (error) {
-      console.error(
-        "Panel update error:",
-        error
-      );
-
-      throw error;
-    }
+    if (error) throw error;
 
     return data;
   };
 
-  // =========================================================
-  // LOAD ONE PACKET RELATIONSHIPS
-  // =========================================================
+  /* =========================================================
+     LOAD PACKET PANEL IDS
+  ========================================================= */
 
-  const loadPacketPanelIds = async (
-    packetDbId
-  ) => {
-    const {
-      data,
-      error,
-    } = await supabase
-      .from("packet_panels")
-      .select("*")
-      .eq(
-        "packet_id",
-        packetDbId
-      )
-      .order("id", {
-        ascending: true,
-      });
+  const loadPacketPanelIds =
+    async (packetDbId) => {
+      const {
+        data,
+        error,
+      } = await supabase
+        .from("packet_panels")
+        .select("*")
+        .eq(
+          "packet_id",
+          packetDbId
+        )
+        .order("id", {
+          ascending: true,
+        });
 
-    if (error) {
-      throw error;
-    }
+      if (error) throw error;
 
-    return Array.isArray(data)
-      ? data
-          .map(
-            (row) =>
-              row.panel_id
-          )
-          .filter(
-            (id) =>
-              id !== null &&
-              id !== undefined
-          )
-      : [];
-  };
+      return Array.isArray(data)
+        ? data
+            .map(
+              (row) =>
+                row.panel_id
+            )
+            .filter(
+              (id) =>
+                id !== null &&
+                id !== undefined
+            )
+        : [];
+    };
 
-  // =========================================================
-  // SCAN PANEL
-  // =========================================================
+  /* =========================================================
+     SCAN PANEL
+  ========================================================= */
 
-  const handleScanPanel = async () => {
-    const qrValue =
-      manualQR.trim();
+  const handleScanPanel =
+    async () => {
+      const qrValue =
+        manualQR.trim();
 
-    if (!qrValue) {
-      showMessage(
-        "Scan or enter a QR value.",
-        "error"
-      );
-
-      return;
-    }
-
-    if (!selectedSite) {
-      showMessage(
-        "Please select a site first.",
-        "error"
-      );
-
-      return;
-    }
-
-    if (actionLoading) {
-      return;
-    }
-
-    // -------------------------------------------------------
-    // FIND PANEL ONLY INSIDE SELECTED SITE
-    // -------------------------------------------------------
-
-    const panel =
-      findPanelByQR(qrValue);
-
-    if (!panel) {
-      showMessage(
-        "Panel not found in the selected site.",
-        "error"
-      );
-
-      setManualQR("");
-
-      setTimeout(() => {
-        inputRef.current?.focus();
-      }, 50);
-
-      return;
-    }
-
-    // -------------------------------------------------------
-    // ALREADY PACKED
-    // -------------------------------------------------------
-
-    if (isPanelPacked(panel)) {
-      showMessage(
-        `${getPanelLabel(
-          panel
-        )} is already packed.`,
-        "error"
-      );
-
-      setSelectedPanelId(
-        panel.id
-      );
-
-      setManualQR("");
-
-      setTimeout(() => {
-        inputRef.current?.focus();
-      }, 50);
-
-      return;
-    }
-
-    try {
-      setActionLoading(true);
-
-      // -----------------------------------------------------
-      // MAKE SURE WE HAVE THE LATEST OPEN PACKET
-      // -----------------------------------------------------
-
-      let packet =
-        openPacket;
-
-      if (!packet) {
-        packet =
-          await createOpenPacket();
-
-        setOpenPacket(packet);
+      if (!qrValue) {
+        return showMessage(
+          "Scan or enter a QR value.",
+          "error"
+        );
       }
 
-      // -----------------------------------------------------
-      // DOUBLE-CHECK PANEL IS NOT ALREADY IN THIS PACKET
-      // -----------------------------------------------------
+      if (!selectedSite) {
+        return showMessage(
+          "Please select a site first.",
+          "error"
+        );
+      }
 
-      const currentPacketPanelIds =
-        await loadPacketPanelIds(
-          packet.dbId ||
-            packet.packetId ||
-            packet.id
+      if (actionLoading) return;
+
+      const panel =
+        findPanelByQR(
+          qrValue
         );
 
-      const alreadyInPacket =
-        currentPacketPanelIds.some(
-          (id) =>
-            String(id) ===
-            String(panel.id)
-        );
-
-      if (alreadyInPacket) {
+      if (!panel) {
         showMessage(
-          `${getPanelLabel(
-            panel
-          )} is already inside ${packet.id}.`,
+          "Panel not found in the selected site.",
           "error"
         );
 
         setManualQR("");
 
+        setTimeout(
+          () =>
+            inputRef.current?.focus(),
+          50
+        );
+
         return;
       }
 
-      // -----------------------------------------------------
-      // ADD PANEL TO PACKET
-      // -----------------------------------------------------
+      if (isPanelPacked(panel)) {
+        showMessage(
+          `${getPanelLabel(
+            panel
+          )} is already packed.`,
+          "error"
+        );
 
-      await addPanelToPacket(
-        packet.dbId ||
-          packet.packetId,
-        panel.id,
-        getPanelLabel(panel)
-      );
+        setSelectedPanelId(
+          panel.id
+        );
 
-      let updatedPanel;
+        setManualQR("");
+
+        setTimeout(
+          () =>
+            inputRef.current?.focus(),
+          50
+        );
+
+        return;
+      }
 
       try {
-        updatedPanel =
-          await updatePanelInSupabase(
-            panel.id,
-            {
-              status:
-                "packed",
+        setActionLoading(true);
 
-              packed:
-                true,
-            }
+        let packet =
+          openPacket;
+
+        if (!packet) {
+          packet =
+            await createOpenPacket();
+
+          setOpenPacket(packet);
+        }
+
+        const packetDbId =
+          packet.dbId ||
+          packet.packetId ||
+          packet.id;
+
+        const currentPacketPanelIds =
+          await loadPacketPanelIds(
+            packetDbId
           );
-      } catch (panelError) {
-        // ---------------------------------------------------
-        // CLEANUP IF PANEL UPDATE FAILS
-        // ---------------------------------------------------
+
+        if (
+          currentPacketPanelIds.some(
+            (id) =>
+              String(id) ===
+              String(panel.id)
+          )
+        ) {
+          showMessage(
+            `${getPanelLabel(
+              panel
+            )} is already inside ${packet.id}.`,
+            "error"
+          );
+
+          setManualQR("");
+
+          return;
+        }
+
+        await addPanelToPacket(
+          packetDbId,
+          panel.id,
+          getPanelLabel(panel)
+        );
+
+        let updatedPanel;
 
         try {
-          await supabase
-            .from("packet_panels")
-            .delete()
-            .eq(
-              "packet_id",
-              packet.dbId ||
-                packet.packetId
-            )
-            .eq(
-              "panel_id",
-              panel.id
+          updatedPanel =
+            await updatePanelInSupabase(
+              panel.id,
+              {
+                status:
+                  "packed",
+                packed:
+                  true,
+              }
             );
-        } catch (cleanupError) {
-          console.error(
-            "Packet relation cleanup failed:",
+        } catch (
+          panelError
+        ) {
+          try {
+            await supabase
+              .from(
+                "packet_panels"
+              )
+              .delete()
+              .eq(
+                "packet_id",
+                packetDbId
+              )
+              .eq(
+                "panel_id",
+                panel.id
+              );
+          } catch (
             cleanupError
-          );
+          ) {
+            console.error(
+              "Packet relation cleanup failed:",
+              cleanupError
+            );
+          }
+
+          throw panelError;
         }
 
-        throw panelError;
+        setPanels(
+          (current) =>
+            current.map(
+              (item) =>
+                String(item.id) ===
+                String(panel.id)
+                  ? {
+                      ...item,
+                      ...(updatedPanel ||
+                        {}),
+                      status:
+                        "packed",
+                      packed:
+                        true,
+                    }
+                  : item
+            )
+        );
+
+        const updatedPacket =
+          {
+            ...packet,
+
+            panelIds: [
+              ...(packet.panelIds ||
+                []),
+              panel.id,
+            ],
+
+            panelQRs: [
+              ...(packet.panelQRs ||
+                []),
+              getPanelLabel(
+                panel
+              ),
+            ],
+          };
+
+        setOpenPacket(
+          updatedPacket
+        );
+
+        setManualQR("");
+
+        setActiveView(
+          "remaining"
+        );
+
+        setSelectedPanelId(
+          panel.id
+        );
+
+        showMessage(
+          `${getPanelLabel(
+            panel
+          )} added to ${packet.id}`
+        );
+
+        setTimeout(
+          () =>
+            inputRef.current?.focus(),
+          50
+        );
+      } catch (error) {
+        console.error(
+          "QR Tracking packing error:",
+          error
+        );
+
+        showMessage(
+          error?.message ||
+            "Unable to pack panel.",
+          "error"
+        );
+      } finally {
+        setActionLoading(false);
       }
-
-      // -----------------------------------------------------
-      // UPDATE LOCAL REACT PANEL STATE
-      // -----------------------------------------------------
-
-      setPanels(
-        (current) =>
-          current.map(
-            (item) =>
-              String(item.id) ===
-              String(panel.id)
-                ? {
-                    ...item,
-                    ...(updatedPanel ||
-                      {}),
-                    status:
-                      "packed",
-                    packed:
-                      true,
-                  }
-                : item
-          )
-      );
-
-      // -----------------------------------------------------
-      // UPDATE OPEN PACKET STATE
-      // -----------------------------------------------------
-
-      const updatedPacket = {
-        ...packet,
-
-        panelIds: [
-          ...(packet.panelIds ||
-            []),
-          panel.id,
-        ],
-
-        panelQRs: [
-          ...(packet.panelQRs ||
-            []),
-          getPanelLabel(panel),
-        ],
-      };
-
-      setOpenPacket(
-        updatedPacket
-      );
-
-      setManualQR("");
-
-      setActiveView(
-        "remaining"
-      );
-
-      setSelectedPanelId(
-        panel.id
-      );
-
-      showMessage(
-        `${getPanelLabel(
-          panel
-        )} added to ${packet.id}`
-      );
-
-      setTimeout(() => {
-        inputRef.current?.focus();
-      }, 50);
-    } catch (error) {
-      console.error(
-        "QR Tracking packing error:",
-        error
-      );
-
-      showMessage(
-        error?.message ||
-          "Unable to pack panel.",
-        "error"
-      );
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  // =========================================================
-  // ENTER KEY
-  // =========================================================
-
-  const handleQRKeyDown = (
-    event
-  ) => {
-    if (
-      event.key ===
-      "Enter"
-    ) {
-      event.preventDefault();
-
-      handleScanPanel();
-    }
-  };
-
-  // =========================================================
-  // PACKET QR LABEL PRINTING
-  // =========================================================
-
-  const getPacketQRValue = (packet) => {
-    return String(
-      packet?.packet_qr ||
-        packet?.packet_code ||
-        packet?.id ||
-        ""
-    ).trim();
-  };
-
-  const escapePrintHtml = (value) => {
-    return String(value ?? "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#039;");
-  };
-
-  const getPacketQRImageUrl = (qrValue) => {
-    return `https://api.qrserver.com/v1/create-qr-code/?size=360x360&margin=10&data=${encodeURIComponent(
-      qrValue
-    )}`;
-  };
-
-  const printPacketLabel = (packet, site) => {
-    const qrValue = getPacketQRValue(packet);
-
-    if (!qrValue) {
-      showMessage(
-        "Packet QR data is missing. The packet was closed, but no QR label could be printed.",
-        "error"
-      );
-      return;
-    }
-
-    const siteName = getSiteName(site);
-    const clientName = getClientName(site);
-    const qrImageUrl = getPacketQRImageUrl(qrValue);
-    const packetPanels = getPacketPanels(packet);
-
-    // The physical label is exactly 100mm x 100mm.
-    // If a packet contains many panels, the print job automatically
-    // creates continuation 100mm x 100mm labels so the panel details
-    // remain readable instead of shrinking into an unusable label.
-    const firstPagePanels = packetPanels.slice(0, 4);
-    const remainingPanels = packetPanels.slice(4);
-    const continuationChunks = [];
-
-    for (let i = 0; i < remainingPanels.length; i += 8) {
-      continuationChunks.push(
-        remainingPanels.slice(i, i + 8)
-      );
-    }
-
-    const renderPanelRows = (rows, startIndex = 0) => {
-      if (!rows.length) {
-        return `
-          <div class="empty-panels">No panel details available</div>
-        `;
-      }
-
-      return rows
-        .map(
-          (panel, index) => `
-            <div class="panel-row">
-              <div class="panel-no">${startIndex + index + 1}</div>
-              <div class="panel-main">
-                <div class="panel-name">${escapePrintHtml(
-                  getPanelNameForPrint(panel)
-                )}</div>
-                <div class="panel-section">${escapePrintHtml(
-                  getPanelSectionForPrint(panel)
-                )}</div>
-              </div>
-              <div class="panel-label">${escapePrintHtml(
-                getPanelLabelNumberForPrint(panel)
-              )}</div>
-              <div class="panel-size">
-                <span>T ${escapePrintHtml(
-                  getPanelThicknessForPrint(panel)
-                )}</span>
-                <span>L ${escapePrintHtml(
-                  getPanelLengthForPrint(panel)
-                )}</span>
-                <span>W ${escapePrintHtml(
-                  getPanelWidthForPrint(panel)
-                )}</span>
-              </div>
-            </div>
-          `
-        )
-        .join("");
     };
 
-    const buildLabel = ({
-      title,
-      rows,
-      startIndex,
-      includeQR,
-    }) => `
-      <section class="label-page">
-        <div class="brand">TRACKERZ</div>
-        <div class="title">${escapePrintHtml(title)}</div>
+  const handleQRKeyDown =
+    (event) => {
+      if (
+        event.key ===
+        "Enter"
+      ) {
+        event.preventDefault();
 
-        ${
-          includeQR
-            ? `
-              <img id="packet-qr-image" class="qr" alt="Packet QR" />
-              <div class="packet-code">${escapePrintHtml(qrValue)}</div>
-              <div class="site">${escapePrintHtml(siteName)}</div>
-              <div class="client">${escapePrintHtml(clientName)}</div>
-            `
-            : `
-              <div class="continuation-code">${escapePrintHtml(
-                qrValue
-              )}</div>
-            `
+        handleScanPanel();
+      }
+    };
+
+  /* =========================================================
+     PACKET QR
+  ========================================================= */
+
+  const getPacketQRValue =
+    (packet) =>
+      String(
+        packet?.packet_qr ||
+          packet?.packet_code ||
+          packet?.id ||
+          ""
+      ).trim();
+
+  const escapePrintHtml =
+    (value) =>
+      String(value ?? "")
+        .replace(
+          /&/g,
+          "&amp;"
+        )
+        .replace(
+          /</g,
+          "&lt;"
+        )
+        .replace(
+          />/g,
+          "&gt;"
+        )
+        .replace(
+          /"/g,
+          "&quot;"
+        )
+        .replace(
+          /'/g,
+          "&#039;"
+        );
+
+  const getPacketQRImageUrl =
+    (qrValue) =>
+      `https://api.qrserver.com/v1/create-qr-code/?size=360x360&margin=10&data=${encodeURIComponent(
+        qrValue
+      )}`;
+
+  /* =========================================================
+     GET PANELS INSIDE PACKET
+  ========================================================= */
+
+  const getPacketPanels =
+    (packet) =>
+      packet
+        ? (packet.panelIds ||
+            [])
+            .map((id) =>
+              sitePanels.find(
+                (panel) =>
+                  String(
+                    panel.id
+                  ) ===
+                  String(id)
+              )
+            )
+            .filter(Boolean)
+        : [];
+
+  /* =========================================================
+     PRINT PACKET LABEL
+  ========================================================= */
+
+  const printPacketLabel = (
+    packet,
+    site
+  ) => {
+    const qrValue =
+      getPacketQRValue(
+        packet
+      );
+
+    if (!qrValue) {
+      return showMessage(
+        "Packet QR data is missing.",
+        "error"
+      );
+    }
+
+    const siteName =
+      getSiteName(site);
+
+    const clientName =
+      getClientName(site);
+
+    const qrImageUrl =
+      getPacketQRImageUrl(
+        qrValue
+      );
+
+    const packetPanels =
+      getPacketPanels(
+        packet
+      );
+
+    const hasRemarks =
+      packetPanels.some(
+        (panel) =>
+          String(
+            getPanelRemarks(
+              panel
+            ) || ""
+          ).trim()
+      );
+
+    const firstPagePanels =
+      packetPanels.slice(
+        0,
+        10
+      );
+
+    const remainingPanels =
+      packetPanels.slice(
+        10
+      );
+
+    const continuationChunks =
+      [];
+
+    for (
+      let i = 0;
+      i <
+      remainingPanels.length;
+      i += 8
+    ) {
+      continuationChunks.push(
+        remainingPanels.slice(
+          i,
+          i + 8
+        )
+      );
+    }
+
+    const renderPanelRows =
+      (
+        rows,
+        startIndex = 0
+      ) => {
+        if (!rows.length) {
+          return `
+            <div class="empty-panels">
+              No panel details available
+            </div>
+          `;
         }
 
-        <div class="panel-summary">
-          ${escapePrintHtml(packetPanels.length)} panel${
-            packetPanels.length === 1 ? "" : "s"
-          }
-        </div>
+        return rows
+          .map(
+            (
+              panel,
+              index
+            ) => `
+              <div class="panel-row ${
+                hasRemarks
+                  ? "with-remarks"
+                  : ""
+              }">
 
-        <div class="panel-header">
-          <span>#</span>
-          <span>Panel / Section</span>
-          <span>Label</span>
-          <span>T / L / W</span>
-        </div>
+                <div class="panel-no">
+                  ${
+                    startIndex +
+                    index +
+                    1
+                  }
+                </div>
 
-        <div class="panel-list">
-          ${renderPanelRows(rows, startIndex)}
-        </div>
+                <div class="panel-main">
+                  <div class="panel-name">
+                    ${escapePrintHtml(
+                      getPanelNameForPrint(
+                        panel
+                      )
+                    )}
+                  </div>
 
-        <div class="footer-code">
-          PACKET QR: ${escapePrintHtml(qrValue)}
-        </div>
-      </section>
-    `;
+                  <div class="panel-section">
+                    ${escapePrintHtml(
+                      getPanelSectionForPrint(
+                        panel
+                      )
+                    )}
+                  </div>
+                </div>
+
+                <div class="panel-label">
+                  ${escapePrintHtml(
+                    getPanelLabelNumberForPrint(
+                      panel
+                    )
+                  )}
+                </div>
+
+                <div class="panel-size">
+                  <span>
+                    T ${escapePrintHtml(
+                      getPanelThickness(
+                        panel
+                      )
+                    )}
+                  </span>
+
+                  <span>
+                    L ${escapePrintHtml(
+                      getPanelLength(
+                        panel
+                      )
+                    )}
+                  </span>
+
+                  <span>
+                    W ${escapePrintHtml(
+                      getPanelWidth(
+                        panel
+                      )
+                    )}
+                  </span>
+                </div>
+
+                ${
+                  hasRemarks
+                    ? `
+                      <div class="panel-remarks">
+                        ${escapePrintHtml(
+                          getPanelRemarks(
+                            panel
+                          ) || "-"
+                        )}
+                      </div>
+                    `
+                    : ""
+                }
+
+              </div>
+            `
+          )
+          .join("");
+      };
+
+    const buildLabel =
+      ({
+        title,
+        rows,
+        startIndex,
+        includeQR,
+      }) => `
+        <section class="label-page">
+
+          <div class="label-top">
+
+            <div class="label-info">
+
+              <div class="brand">
+                TRACKERZ
+              </div>
+
+              <div class="title">
+                ${escapePrintHtml(
+                  title
+                )}
+              </div>
+
+              <div class="packet-code">
+                ${escapePrintHtml(
+                  qrValue
+                )}
+              </div>
+
+              <div class="site">
+                ${escapePrintHtml(
+                  siteName
+                )}
+              </div>
+
+              <div class="client">
+                ${escapePrintHtml(
+                  clientName
+                )}
+              </div>
+
+              <div class="panel-summary">
+                ${
+                  packetPanels.length
+                } PANELS
+              </div>
+
+            </div>
+
+            ${
+              includeQR
+                ? `
+                  <img
+                    id="packet-qr-image"
+                    class="qr"
+                    alt="Packet QR"
+                  />
+                `
+                : `
+                  <div class="continuation-mark">
+                    PACKET<br/>
+                    PANELS
+                  </div>
+                `
+            }
+
+          </div>
+
+          <div class="panel-header ${
+            hasRemarks
+              ? "with-remarks"
+              : ""
+          }">
+
+            <span>#</span>
+
+            <span>
+              Panel / Section
+            </span>
+
+            <span>
+              Label
+            </span>
+
+            <span>
+              T / L / W
+            </span>
+
+            ${
+              hasRemarks
+                ? "<span>Remarks</span>"
+                : ""
+            }
+
+          </div>
+
+          <div class="panel-list">
+            ${renderPanelRows(
+              rows,
+              startIndex
+            )}
+          </div>
+
+          <div class="footer-code">
+            PACKET QR:
+            ${escapePrintHtml(
+              qrValue
+            )}
+          </div>
+
+        </section>
+      `;
 
     const labels = [
       buildLabel({
-        title: "PACKET QR + PANEL DETAILS",
-        rows: firstPagePanels,
+        title:
+          "PACKET QR + PANEL DETAILS",
+
+        rows:
+          firstPagePanels,
+
         startIndex: 0,
+
         includeQR: true,
       }),
     ];
 
-    continuationChunks.forEach((chunk, index) => {
-      labels.push(
-        buildLabel({
-          title: `PACKET PANELS — CONT. ${index + 1}`,
-          rows: chunk,
-          startIndex: 4 + index * 8,
-          includeQR: false,
-        })
+    continuationChunks.forEach(
+      (
+        chunk,
+        index
+      ) => {
+        labels.push(
+          buildLabel({
+            title: `PACKET PANELS — CONT. ${
+              index + 1
+            }`,
+
+            rows: chunk,
+
+            startIndex:
+              10 +
+              index * 8,
+
+            includeQR:
+              false,
+          })
+        );
+      }
+    );
+
+    const iframe =
+      document.createElement(
+        "iframe"
       );
-    });
 
-    const iframe = document.createElement("iframe");
+    iframe.style.position =
+      "fixed";
 
-    iframe.style.position = "fixed";
-    iframe.style.right = "0";
-    iframe.style.bottom = "0";
-    iframe.style.width = "0";
-    iframe.style.height = "0";
-    iframe.style.border = "0";
-    iframe.style.opacity = "0";
-    iframe.setAttribute("aria-hidden", "true");
+    iframe.style.right =
+      "0";
 
-    document.body.appendChild(iframe);
+    iframe.style.bottom =
+      "0";
 
-    const printDocument = iframe.contentWindow?.document;
+    iframe.style.width =
+      "0";
+
+    iframe.style.height =
+      "0";
+
+    iframe.style.border =
+      "0";
+
+    iframe.style.opacity =
+      "0";
+
+    iframe.setAttribute(
+      "aria-hidden",
+      "true"
+    );
+
+    document.body.appendChild(
+      iframe
+    );
+
+    const printDocument =
+      iframe.contentWindow
+        ?.document;
 
     if (!printDocument) {
-      document.body.removeChild(iframe);
-      showMessage(
-        "Unable to open the print window. Use Print Packet QR again.",
+      document.body.removeChild(
+        iframe
+      );
+
+      return showMessage(
+        "Unable to open print window.",
         "error"
       );
-      return;
     }
 
     printDocument.open();
+
     printDocument.write(`
       <!DOCTYPE html>
+
       <html>
+
         <head>
-          <title>${escapePrintHtml(qrValue)}</title>
-          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+          <title>
+            ${escapePrintHtml(
+              qrValue
+            )}
+          </title>
+
+          <meta
+            name="viewport"
+            content="width=device-width, initial-scale=1.0"
+          />
+
           <style>
+
             @page {
               size: 100mm 100mm;
               margin: 0;
@@ -1588,113 +1654,186 @@ function QRTracking() {
               margin: 0;
               padding: 0;
               width: 100mm;
-              background: #ffffff;
-              font-family: Arial, Helvetica, sans-serif;
+              background: #fff;
+              font-family:
+                Arial,
+                Helvetica,
+                sans-serif;
               color: #111827;
             }
 
             .label-page {
               width: 100mm;
               height: 100mm;
-              padding: 4mm;
+              padding: 3mm;
               overflow: hidden;
               page-break-after: always;
-              background: #ffffff;
+              background: #fff;
             }
 
             .label-page:last-child {
               page-break-after: auto;
             }
 
+            .label-top {
+              height: 22mm;
+              display: flex;
+              align-items: flex-start;
+              justify-content: space-between;
+              gap: 3mm;
+              border-bottom:
+                0.2mm solid #d1d5db;
+              padding-bottom: 2mm;
+            }
+
+            .label-info {
+              min-width: 0;
+              flex: 1;
+              padding-top: 0.3mm;
+            }
+
             .brand {
-              font-size: 9px;
+              font-size: 5.5px;
+              line-height: 1;
               font-weight: 900;
-              letter-spacing: 1.4px;
+              letter-spacing: 0.8px;
               color: #2563eb;
-              text-align: center;
             }
 
             .title {
               margin-top: 1mm;
-              font-size: 7px;
-              font-weight: 800;
+              font-size: 4.2px;
+              line-height: 1;
+              font-weight: 700;
               color: #6b7280;
-              text-align: center;
-            }
-
-            .qr {
-              width: 27mm;
-              height: 27mm;
-              object-fit: contain;
-              display: block;
-              margin: 2mm auto 1mm;
             }
 
             .packet-code {
-              font-size: 10px;
-              line-height: 1.05;
+              margin-top: 2.2mm;
+              font-size: 7px;
+              line-height: 1;
               font-weight: 900;
-              text-align: center;
-              word-break: break-word;
+              color: #111827;
+              white-space: nowrap;
+              overflow: hidden;
+              text-overflow: ellipsis;
             }
 
             .site {
-              margin-top: 1mm;
-              font-size: 7px;
+              margin-top: 1.1mm;
+              font-size: 5.4px;
+              line-height: 1;
               font-weight: 800;
-              text-align: center;
-              word-break: break-word;
+              white-space: nowrap;
+              overflow: hidden;
+              text-overflow: ellipsis;
             }
 
             .client {
-              font-size: 6.5px;
+              margin-top: 0.7mm;
+              font-size: 4.3px;
+              line-height: 1;
               color: #6b7280;
-              text-align: center;
-              word-break: break-word;
-            }
-
-            .continuation-code {
-              margin: 2mm 0 1mm;
-              text-align: center;
-              font-size: 9px;
-              font-weight: 900;
-              word-break: break-word;
+              white-space: nowrap;
+              overflow: hidden;
+              text-overflow: ellipsis;
             }
 
             .panel-summary {
-              margin: 1.5mm 0 1mm;
-              font-size: 7px;
-              font-weight: 800;
-              color: #374151;
+              margin-top: 1.5mm;
+              font-size: 5.2px;
+              line-height: 1;
+              font-weight: 900;
+            }
+
+            .qr {
+              width: 16mm;
+              height: 16mm;
+              object-fit: contain;
+              display: block;
+              flex-shrink: 0;
+              margin-top: 0.5mm;
+            }
+
+            .continuation-mark {
+              width: 16mm;
+              height: 16mm;
+              flex-shrink: 0;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              text-align: center;
+              font-size: 5px;
+              line-height: 1.25;
+              font-weight: 900;
+              color: #9ca3af;
+              border:
+                0.3mm dashed #d1d5db;
+              border-radius: 1.5mm;
             }
 
             .panel-header,
             .panel-row {
               display: grid;
-              grid-template-columns: 4mm 1fr 18mm 27mm;
-              column-gap: 1.2mm;
+              grid-template-columns:
+                5mm
+                1fr
+                12mm
+                23mm;
+
+              column-gap: 1mm;
+
               align-items: center;
             }
 
+            .panel-header.with-remarks,
+            .panel-row.with-remarks {
+              grid-template-columns:
+                5mm
+                1fr
+                11mm
+                22mm
+                22mm;
+            }
+
             .panel-header {
-              min-height: 4mm;
-              padding: 1mm;
+              min-height: 5mm;
+              padding:
+                1mm
+                0.8mm;
+
+              margin-top: 1.2mm;
+
               background: #f3f4f6;
-              border-top: 0.2mm solid #d1d5db;
-              border-bottom: 0.2mm solid #d1d5db;
-              font-size: 5px;
+
+              border-top:
+                0.2mm solid #d1d5db;
+
+              border-bottom:
+                0.2mm solid #d1d5db;
+
+              font-size: 4.4px;
+
+              line-height: 1;
+
               font-weight: 900;
+
               color: #4b5563;
             }
 
             .panel-row {
-              min-height: 6.4mm;
-              padding: 0.9mm 1mm;
-              border-bottom: 0.2mm solid #e5e7eb;
-              font-size: 5.3px;
+              min-height: 6.2mm;
+
+              padding:
+                0.9mm
+                0.8mm;
+
+              border-bottom:
+                0.15mm solid #e5e7eb;
             }
 
             .panel-no {
+              font-size: 5px;
               font-weight: 900;
               text-align: center;
             }
@@ -1705,6 +1844,7 @@ function QRTracking() {
 
             .panel-name {
               font-size: 5.5px;
+              line-height: 1.05;
               font-weight: 900;
               white-space: nowrap;
               overflow: hidden;
@@ -1712,7 +1852,9 @@ function QRTracking() {
             }
 
             .panel-section {
-              margin-top: 0.4mm;
+              margin-top: 0.7mm;
+              font-size: 4px;
+              line-height: 1;
               color: #6b7280;
               white-space: nowrap;
               overflow: hidden;
@@ -1720,6 +1862,8 @@ function QRTracking() {
             }
 
             .panel-label {
+              font-size: 4.3px;
+              line-height: 1.05;
               font-weight: 800;
               white-space: nowrap;
               overflow: hidden;
@@ -1728,55 +1872,83 @@ function QRTracking() {
 
             .panel-size {
               display: flex;
-              gap: 1.2mm;
+              gap: 1mm;
               white-space: nowrap;
-              font-weight: 700;
+              font-size: 4.3px;
+              line-height: 1;
+              font-weight: 900;
+            }
+
+            .panel-remarks {
+              font-size: 4px;
+              line-height: 1.1;
+              color: #374151;
+              white-space: nowrap;
+              overflow: hidden;
+              text-overflow: ellipsis;
             }
 
             .footer-code {
-              margin-top: 1.5mm;
-              font-size: 4.8px;
+              margin-top: 1mm;
+              font-size: 3px;
+              line-height: 1;
               color: #9ca3af;
-              word-break: break-all;
+              white-space: nowrap;
+              overflow: hidden;
+              text-overflow: ellipsis;
             }
 
             .empty-panels {
-              padding: 4mm 1mm;
-              font-size: 6px;
+              padding: 3mm 1mm;
+              font-size: 5px;
               color: #6b7280;
             }
+
           </style>
+
         </head>
+
         <body>
           ${labels.join("\n")}
         </body>
+
       </html>
     `);
+
     printDocument.close();
 
-    const qrImage = printDocument.getElementById("packet-qr-image");
+    const qrImage =
+      printDocument.getElementById(
+        "packet-qr-image"
+      );
 
     let printed = false;
 
     const cleanup = () => {
       window.setTimeout(() => {
-        if (iframe.parentNode) {
-          iframe.parentNode.removeChild(iframe);
+        if (
+          iframe.parentNode
+        ) {
+          iframe.parentNode.removeChild(
+            iframe
+          );
         }
       }, 1000);
     };
 
     const doPrint = () => {
       if (printed) return;
+
       printed = true;
 
       try {
         iframe.contentWindow.focus();
+
         iframe.contentWindow.print();
-      } catch (printError) {
+      } catch (error) {
         console.error(
           "Packet label print error:",
-          printError
+          error
         );
       }
 
@@ -1784,223 +1956,242 @@ function QRTracking() {
     };
 
     if (qrImage) {
-      qrImage.onload = () => {
-        window.setTimeout(doPrint, 150);
-      };
+      qrImage.onload = () =>
+        window.setTimeout(
+          doPrint,
+          150
+        );
 
       qrImage.onerror = () => {
         showMessage(
-          "Packet label opened, but the QR image could not be loaded. Check the factory internet connection and use Print Packet QR again.",
+          "QR image could not be loaded. Check the factory internet connection.",
           "error"
         );
-        window.setTimeout(doPrint, 150);
+
+        window.setTimeout(
+          doPrint,
+          150
+        );
       };
 
-      qrImage.src = qrImageUrl;
+      qrImage.src =
+        qrImageUrl;
     } else {
-      window.setTimeout(doPrint, 150);
+      window.setTimeout(
+        doPrint,
+        150
+      );
     }
   };
 
-  // =========================================================
-  // CLOSE CURRENT PACKET
-  // =========================================================
+  /* =========================================================
+     CLOSE PACKET
+  ========================================================= */
 
-  const handleClosePacket = async () => {
-    if (!openPacket) {
-      showMessage(
-        "No packet is currently open.",
-        "error"
-      );
-
-      return;
-    }
-
-    const packetDbId =
-      openPacket.dbId ||
-      openPacket.packetId;
-
-    try {
-      setActionLoading(true);
-
-      const panelIds =
-        await loadPacketPanelIds(
-          packetDbId
-        );
-
-      if (panelIds.length === 0) {
-        showMessage(
-          "Cannot close an empty packet.",
+  const handleClosePacket =
+    async () => {
+      if (!openPacket) {
+        return showMessage(
+          "No packet is currently open.",
           "error"
         );
-
-        return;
       }
 
-      const {
-        data,
-        error,
-      } = await supabase
-        .from("packets")
-        .update({
-          status:
-            "closed",
+      const packetDbId =
+        openPacket.dbId ||
+        openPacket.packetId;
 
-          packet_qr:
-            openPacket.packet_qr ||
-            openPacket.packet_code ||
-            openPacket.id,
+      try {
+        setActionLoading(true);
 
-          closed_at:
-            new Date().toISOString(),
-        })
-        .eq(
-          "id",
-          packetDbId
-        )
-        .select()
-        .single();
+        const panelIds =
+          await loadPacketPanelIds(
+            packetDbId
+          );
 
-      if (error) {
-        throw error;
-      }
+        if (!panelIds.length) {
+          return showMessage(
+            "Cannot close an empty packet.",
+            "error"
+          );
+        }
 
-      const closedPacket = {
-        ...openPacket,
+        const {
+          data,
+          error,
+        } = await supabase
+          .from("packets")
+          .update({
+            status: "closed",
 
-        ...data,
+            packet_qr:
+              openPacket.packet_qr ||
+              openPacket.packet_code ||
+              openPacket.id,
 
-        dbId:
-          data.id,
+            closed_at:
+              new Date().toISOString(),
+          })
+          .eq(
+            "id",
+            packetDbId
+          )
+          .select()
+          .single();
 
-        packetId:
-          data.id,
+        if (error) throw error;
 
-        id:
-          data.packet_code ||
-          openPacket.id,
+        const closedPacket =
+          {
+            ...openPacket,
 
-        panelIds,
+            ...data,
 
-        panelQRs:
-          panelIds.map(
-            (id) => {
-              const panel =
-                panels.find(
-                  (item) =>
-                    String(
-                      item.id
-                    ) ===
-                    String(id)
-                );
+            dbId: data.id,
 
-              return panel
-                ? getPanelLabel(
-                    panel
-                  )
-                : String(id);
-            }
-          ),
-      };
+            packetId: data.id,
 
-      const packetQRValue = getPacketQRValue(closedPacket);
+            id:
+              data.packet_code ||
+              openPacket.id,
 
-      setPacketPrintData({
-        packet: {
-          ...closedPacket,
-          packet_qr: packetQRValue,
-        },
-        site: selectedSite,
-        panelCount: panelIds.length,
-      });
+            panelIds,
 
-      // Automatically open the browser print dialog for the packet sticker.
-      printPacketLabel(
-        {
-          ...closedPacket,
-          packet_qr: packetQRValue,
-        },
-        selectedSite
-      );
+            panelQRs:
+              panelIds.map(
+                (id) => {
+                  const panel =
+                    panels.find(
+                      (item) =>
+                        String(
+                          item.id
+                        ) ===
+                        String(id)
+                    );
 
-      setOpenPacket(
-        null
-      );
+                  return panel
+                    ? getPanelLabel(
+                        panel
+                      )
+                    : String(id);
+                }
+              ),
+          };
 
-      setClosedPackets(
-        (current) => [
+        /*
+         * IMPORTANT:
+         * Packet QR printing remains exactly part
+         * of packet closing.
+         */
+
+        printPacketLabel(
           closedPacket,
-          ...current.filter(
-            (item) =>
-              String(
-                item.packetId ||
-                  item.dbId
-              ) !==
-              String(
-                packetDbId
-              )
-          ),
-        ]
-      );
+          selectedSite
+        );
 
-      setSelectedPacketId(
-        closedPacket.id
-      );
+        setOpenPacket(null);
 
-      setSelectedPanelId(
-        null
-      );
+        setAllPackets(
+          (current) => [
+            closedPacket,
 
-      setActiveView(
-        "packets"
-      );
+            ...current.filter(
+              (item) =>
+                String(
+                  item.dbId ||
+                    item.packetId
+                ) !==
+                String(
+                  packetDbId
+                )
+            ),
+          ]
+        );
 
-      showMessage(
-        `${closedPacket.id} closed with ${panelIds.length} panel${
-          panelIds.length ===
-          1
-            ? ""
-            : "s"
-        }.`
-      );
+        setClosedPackets(
+          (current) => [
+            closedPacket,
 
-      setTimeout(() => {
-        inputRef.current?.focus();
-      }, 50);
-    } catch (error) {
-      console.error(
-        "Close packet error:",
-        error
-      );
+            ...current.filter(
+              (item) =>
+                String(
+                  item.dbId ||
+                    item.packetId
+                ) !==
+                String(
+                  packetDbId
+                )
+            ),
+          ]
+        );
 
-      showMessage(
-        error?.message ||
-          "Unable to close packet.",
-        "error"
-      );
-    } finally {
-      setActionLoading(false);
-    }
-  };
+        setSelectedPacketId(
+          closedPacket.id
+        );
 
-  // =========================================================
-  // DELETE PANEL FROM OPEN PACKET
-  // =========================================================
+        setSelectedPanelId(
+          null
+        );
+
+        /*
+         * After closing, show packet history
+         * so the newly created READY packet is visible.
+         */
+        setActiveView(
+          "packets"
+        );
+
+        showMessage(
+          `${closedPacket.id} closed with ${
+            panelIds.length
+          } panel${
+            panelIds.length === 1
+              ? ""
+              : "s"
+          }.`
+        );
+
+        setTimeout(
+          () =>
+            inputRef.current?.focus(),
+          50
+        );
+      } catch (error) {
+        console.error(
+          "Close packet error:",
+          error
+        );
+
+        showMessage(
+          error?.message ||
+            "Unable to close packet.",
+          "error"
+        );
+      } finally {
+        setActionLoading(false);
+      }
+    };
+
+  /* =========================================================
+     REMOVE PANEL FROM OPEN PACKET
+  ========================================================= */
 
   const handleDeletePanelFromOpenPacket =
     async (panel) => {
-      if (!panel || !openPacket) {
+      if (
+        !panel ||
+        !openPacket
+      ) {
         return;
       }
 
-      const confirmed =
-        window.confirm(
+      if (
+        !window.confirm(
           `Remove ${getPanelLabel(
             panel
           )} from the current packet?`
-        );
-
-      if (!confirmed) {
+        )
+      ) {
         return;
       }
 
@@ -2012,10 +2203,11 @@ function QRTracking() {
           openPacket.packetId;
 
         const {
-          error:
-            relationError,
+          error,
         } = await supabase
-          .from("packet_panels")
+          .from(
+            "packet_panels"
+          )
           .delete()
           .eq(
             "packet_id",
@@ -2026,9 +2218,7 @@ function QRTracking() {
             panel.id
           );
 
-        if (relationError) {
-          throw relationError;
-        }
+        if (error) throw error;
 
         const updatedPanel =
           await updatePanelInSupabase(
@@ -2036,7 +2226,6 @@ function QRTracking() {
             {
               status:
                 "pending",
-
               packed:
                 false,
             }
@@ -2061,36 +2250,41 @@ function QRTracking() {
             )
         );
 
-        const updatedPacket = {
-          ...openPacket,
-
-          panelIds:
-            (
-              openPacket.panelIds ||
-              []
-            ).filter(
-              (id) =>
-                String(id) !==
-                String(panel.id)
-            ),
-
-          panelQRs:
-            (
-              openPacket.panelQRs ||
-              []
-            ).filter(
-              (qr) =>
-                String(qr) !==
-                String(
-                  getPanelLabel(
-                    panel
-                  )
-                )
-            ),
-        };
-
         setOpenPacket(
-          updatedPacket
+          (packet) =>
+            packet
+              ? {
+                  ...packet,
+
+                  panelIds:
+                    (
+                      packet.panelIds ||
+                      []
+                    ).filter(
+                      (id) =>
+                        String(id) !==
+                        String(
+                          panel.id
+                        )
+                    ),
+
+                  panelQRs:
+                    (
+                      packet.panelQRs ||
+                      []
+                    ).filter(
+                      (qr) =>
+                        String(
+                          qr
+                        ) !==
+                        String(
+                          getPanelLabel(
+                            panel
+                          )
+                        )
+                    ),
+                }
+              : packet
         );
 
         showMessage(
@@ -2112,150 +2306,226 @@ function QRTracking() {
       } finally {
         setActionLoading(false);
 
-        setTimeout(() => {
-          inputRef.current?.focus();
-        }, 50);
+        setTimeout(
+          () =>
+            inputRef.current?.focus(),
+          50
+        );
       }
     };
 
-  // =========================================================
-  // DELETE PACKET
-  // =========================================================
+  /* =========================================================
+     DELETE PACKET
+  ========================================================= */
 
   const deletePacketAndReturnPanels =
     async (packet) => {
-      if (!packet) {
-        return;
-      }
+      if (!packet) return;
 
       const packetDbId =
         packet.dbId ||
         packet.packetId;
 
-      try {
-        const panelIds =
-          await loadPacketPanelIds(
-            packetDbId
-          );
-
-        for (
-          const panelId of panelIds
-        ) {
-          await updatePanelInSupabase(
-            panelId,
-            {
-              status:
-                "pending",
-
-              packed:
-                false,
-            }
-          );
-        }
-
-        const {
-          error:
-            relationDeleteError,
-        } = await supabase
-          .from("packet_panels")
-          .delete()
-          .eq(
-            "packet_id",
-            packetDbId
-          );
-
-        if (
-          relationDeleteError
-        ) {
-          throw relationDeleteError;
-        }
-
-        const {
-          error:
-            packetDeleteError,
-        } = await supabase
-          .from("packets")
-          .delete()
-          .eq(
-            "id",
-            packetDbId
-          );
-
-        if (packetDeleteError) {
-          throw packetDeleteError;
-        }
-
-        setPanels(
-          (current) =>
-            current.map(
-              (panel) =>
-                panelIds.some(
-                  (id) =>
-                    String(id) ===
-                    String(
-                      panel.id
-                    )
-                )
-                  ? {
-                      ...panel,
-                      status:
-                        "pending",
-                      packed:
-                        false,
-                    }
-                  : panel
-            )
+      const panelIds =
+        await loadPacketPanelIds(
+          packetDbId
         );
 
-        const packetWasOpen =
-          openPacket &&
+      for (
+        const panelId of panelIds
+      ) {
+        await updatePanelInSupabase(
+          panelId,
+          {
+            status:
+              "pending",
+            packed:
+              false,
+          }
+        );
+      }
+
+      const {
+        error:
+          relationDeleteError,
+      } = await supabase
+        .from(
+          "packet_panels"
+        )
+        .delete()
+        .eq(
+          "packet_id",
+          packetDbId
+        );
+
+      if (
+        relationDeleteError
+      ) {
+        throw relationDeleteError;
+      }
+
+      const {
+        error:
+          packetDeleteError,
+      } = await supabase
+        .from("packets")
+        .delete()
+        .eq(
+          "id",
+          packetDbId
+        );
+
+      if (
+        packetDeleteError
+      ) {
+        throw packetDeleteError;
+      }
+
+      setPanels(
+        (current) =>
+          current.map(
+            (panel) =>
+              panelIds.some(
+                (id) =>
+                  String(id) ===
+                  String(
+                    panel.id
+                  )
+              )
+                ? {
+                    ...panel,
+                    status:
+                      "pending",
+                    packed:
+                      false,
+                  }
+                : panel
+          )
+      );
+
+      setAllPackets(
+        (current) =>
+          current.filter(
+            (item) =>
+              String(
+                item.dbId ||
+                  item.packetId
+              ) !==
+              String(
+                packetDbId
+              )
+          )
+      );
+
+      setClosedPackets(
+        (current) =>
+          current.filter(
+            (item) =>
+              String(
+                item.dbId ||
+                  item.packetId
+              ) !==
+              String(
+                packetDbId
+              )
+          )
+      );
+
+      if (
+        openPacket &&
+        String(
+          openPacket.dbId ||
+            openPacket.packetId
+        ) ===
           String(
-            openPacket.dbId ||
-              openPacket.packetId
-          ) ===
-            String(
-              packetDbId
-            );
-
-        if (packetWasOpen) {
-          setOpenPacket(
-            null
-          );
-        }
-
-        setClosedPackets(
-          (current) =>
-            current.filter(
-              (item) =>
-                String(
-                  item.dbId ||
-                    item.packetId
-                ) !==
-                String(
-                  packetDbId
-                )
-            )
-        );
-
-        setSelectedPacketId(
+            packetDbId
+          )
+      ) {
+        setOpenPacket(
           null
         );
+      }
 
-        setSelectedPanelId(
-          null
+      setSelectedPacketId(
+        null
+      );
+
+      setSelectedPanelId(
+        null
+      );
+
+      setActiveView(
+        "remaining"
+      );
+
+      showMessage(
+        `${packet.id} deleted and ${
+          panelIds.length
+        } panel${
+          panelIds.length === 1
+            ? ""
+            : "s"
+        } returned to Remaining.`
+      );
+    };
+
+  const handleDeleteOpenPacket =
+    async () => {
+      if (!openPacket) return;
+
+      if (
+        !window.confirm(
+          `Delete ${openPacket.id} and return its panels to Remaining?`
+        )
+      ) {
+        return;
+      }
+
+      try {
+        setActionLoading(true);
+
+        await deletePacketAndReturnPanels(
+          openPacket
         );
-
-        setActiveView(
-          "remaining"
+      } catch (error) {
+        console.error(
+          "Delete open packet error:",
+          error
         );
 
         showMessage(
-          `${packet.id} deleted and ${panelIds.length} panel${
-            panelIds.length ===
-            1
-              ? ""
-              : "s"
-          } returned to Remaining.`
+          error?.message ||
+            "Unable to delete packet.",
+          "error"
+        );
+      } finally {
+        setActionLoading(false);
+
+        setTimeout(
+          () =>
+            inputRef.current?.focus(),
+          50
+        );
+      }
+    };
+
+  const handleDeleteClosedPacket =
+    async (packet) => {
+      if (!packet) return;
+
+      if (
+        !window.confirm(
+          `Delete ${packet.id} and return its panels to Remaining?`
+        )
+      ) {
+        return;
+      }
+
+      try {
+        setActionLoading(true);
+
+        await deletePacketAndReturnPanels(
+          packet
         );
       } catch (error) {
         console.error(
@@ -2268,290 +2538,125 @@ function QRTracking() {
             "Unable to delete packet.",
           "error"
         );
-      }
-    };
-
-  // =========================================================
-  // DELETE OPEN PACKET
-  // =========================================================
-
-  const handleDeleteOpenPacket =
-    async () => {
-      if (!openPacket) {
-        return;
-      }
-
-      const confirmed =
-        window.confirm(
-          `Delete ${openPacket.id} and return its panels to Remaining?`
-        );
-
-      if (!confirmed) {
-        return;
-      }
-
-      try {
-        setActionLoading(true);
-
-        await deletePacketAndReturnPanels(
-          openPacket
-        );
-      } finally {
-        setActionLoading(false);
-
-        setTimeout(() => {
-          inputRef.current?.focus();
-        }, 50);
-      }
-    };
-
-  // =========================================================
-  // DELETE CLOSED PACKET
-  // =========================================================
-
-  const handleDeleteClosedPacket =
-    async (packet) => {
-      if (!packet) {
-        return;
-      }
-
-      const confirmed =
-        window.confirm(
-          `Delete ${packet.id} and return its panels to Remaining?`
-        );
-
-      if (!confirmed) {
-        return;
-      }
-
-      try {
-        setActionLoading(true);
-
-        await deletePacketAndReturnPanels(
-          packet
-        );
       } finally {
         setActionLoading(false);
       }
     };
 
-  // =========================================================
-  // SITE CHANGE
-  // =========================================================
+  /* =========================================================
+     SITE CHANGE
+  ========================================================= */
 
-  const handleSiteChange = (
-    event
-  ) => {
-    const newSiteId =
-      event.target.value;
-
-    if (
-      openPacket &&
-      openPacket.panelIds?.length >
-        0
-    ) {
-      const confirmed =
-        window.confirm(
-          `Packet ${openPacket.id} is still open. Change site anyway?`
-        );
-
-      if (!confirmed) {
-        return;
-      }
-    }
-
-    setSelectedSiteId(
-      newSiteId
-    );
-
-    setActiveView(
-      "remaining"
-    );
-
-    setOpenPacket(null);
-    setSelectedPacketId(null);
-    setSelectedPanelId(null);
-    setManualQR("");
-    setMessage("");
-  };
-
-  // =========================================================
-  // SELECTED PACKET
-  // =========================================================
-
-  const selectedPacket =
-    useMemo(() => {
-      return closedPackets.find(
-        (packet) =>
-          String(
-            packet.id
-          ) ===
-          String(
-            selectedPacketId
-          )
-      );
-    }, [
-      closedPackets,
-      selectedPacketId,
-    ]);
-
-  // =========================================================
-  // GET PACKET PANELS
-  // =========================================================
-
-  const getPacketPanels = (
-    packet
-  ) => {
-    if (!packet) {
-      return [];
-    }
-
-    return (
-      packet.panelIds || []
-    )
-      .map((id) =>
-        sitePanels.find(
-          (panel) =>
-            String(panel.id) ===
-            String(id)
-        )
-      )
-      .filter(Boolean);
-  };
-
-  // =========================================================
-  // SELECTED PANEL
-  // =========================================================
-
-  const selectedPanel =
-    useMemo(() => {
-      return sitePanels.find(
-        (panel) =>
-          String(panel.id) ===
-          String(selectedPanelId)
-      );
-    }, [
-      sitePanels,
-      selectedPanelId,
-    ]);
-
-  // =========================================================
-  // MARK SITE DELIVERED
-  // =========================================================
-
-  const handleMarkDelivered =
-    async () => {
-      if (!selectedSite) {
-        return;
-      }
+  const handleSiteChange =
+    (event) => {
+      const newSiteId =
+        event.target.value;
 
       if (
-        remainingCount >
-        0
+        openPacket?.panelIds
+          ?.length
       ) {
-        showMessage(
-          `Cannot mark delivered. ${remainingCount} panels are still remaining.`,
-          "error"
-        );
-
-        return;
-      }
-
-      if (openPacket) {
-        showMessage(
-          "Please close the current packet first.",
-          "error"
-        );
-
-        return;
-      }
-
-      const confirmed =
-        window.confirm(
-          `Mark "${getSiteName(
-            selectedSite
-          )}" as Delivered?`
-        );
-
-      if (!confirmed) {
-        return;
-      }
-
-      try {
-        setActionLoading(true);
-
-        const {
-          data,
-          error,
-        } = await supabase
-          .from("sites")
-          .update({
-            status:
-              "Delivered",
-          })
-          .eq(
-            "id",
-            selectedSite.id
+        if (
+          !window.confirm(
+            `Packet ${openPacket.id} is still open. Change site anyway?`
           )
-          .select()
-          .single();
-
-        if (error) {
-          throw error;
+        ) {
+          return;
         }
-
-        setSites(
-          (current) =>
-            current.map(
-              (site) =>
-                String(site.id) ===
-                String(
-                  selectedSite.id
-                )
-                  ? {
-                      ...site,
-                      ...data,
-                    }
-                  : site
-            )
-        );
-
-        showMessage(
-          `${getSiteName(
-            selectedSite
-          )} marked as Delivered.`
-        );
-      } catch (error) {
-        console.error(
-          "Mark delivered error:",
-          error
-        );
-
-        showMessage(
-          error?.message ||
-            "Unable to update site.",
-          "error"
-        );
-      } finally {
-        setActionLoading(false);
       }
+
+      setSelectedSiteId(
+        newSiteId
+      );
+
+      setActiveView(
+        "remaining"
+      );
+
+      setOpenPacket(null);
+
+      setSelectedPacketId(
+        null
+      );
+
+      setSelectedPanelId(
+        null
+      );
+
+      setManualQR("");
+
+      setMessage("");
     };
 
-  // =========================================================
-  // SELECT PANEL
-  // =========================================================
+  /* =========================================================
+     SELECTED PACKET
+  ========================================================= */
 
-  const handleSelectPanel = (
-    panel
-  ) => {
-    setSelectedPanelId(
-      panel.id
+  const selectedPacket =
+    useMemo(
+      () =>
+        closedPackets.find(
+          (packet) =>
+            String(
+              packet.id
+            ) ===
+            String(
+              selectedPacketId
+            )
+        ),
+
+      [
+        closedPackets,
+        selectedPacketId,
+      ]
     );
-  };
 
-  // =========================================================
-  // BUTTON STYLE
-  // =========================================================
+  /* =========================================================
+     SELECTED PANEL
+  ========================================================= */
+
+  const selectedPanel =
+    useMemo(
+      () =>
+        sitePanels.find(
+          (panel) =>
+            String(
+              panel.id
+            ) ===
+            String(
+              selectedPanelId
+            )
+        ),
+
+      [
+        sitePanels,
+        selectedPanelId,
+      ]
+    );
+
+  const handleSelectPanel =
+    (panel) =>
+      setSelectedPanelId(
+        panel.id
+      );
+
+  /* =========================================================
+     DIMENSIONS
+  ========================================================= */
+
+  const getPanelDimensions =
+    (panel) =>
+      `T ${getPanelThickness(
+        panel
+      )} × L ${getPanelLength(
+        panel
+      )} × W ${getPanelWidth(
+        panel
+      )}`;
+
+  /* =========================================================
+     TOP CARD STYLE
+  ========================================================= */
 
   const topButtonStyle = (
     active,
@@ -2559,220 +2664,362 @@ function QRTracking() {
   ) => {
     const colors = {
       blue: {
-        border: "#2563eb",
-        background: "#eff6ff",
+        border:
+          "#2563eb",
+        background:
+          "#eff6ff",
+        text:
+          "#1d4ed8",
       },
 
       green: {
-        border: "#16a34a",
-        background: "#f0fdf4",
+        border:
+          "#16a34a",
+        background:
+          "#f0fdf4",
+        text:
+          "#15803d",
       },
 
       purple: {
-        border: "#7c3aed",
-        background: "#f5f3ff",
+        border:
+          "#7c3aed",
+        background:
+          "#f5f3ff",
+        text:
+          "#6d28d9",
       },
     };
 
-    const selected =
+    const c =
       colors[type];
 
     return {
-      flex: "1 1 0",
-      minWidth: "0",
+      flex:
+        "1 1 0",
+
+      minWidth: 0,
+
       border: active
-        ? `1px solid ${selected.border}`
+        ? `1px solid ${c.border}`
         : "1px solid #e5e7eb",
-      background: active
-        ? selected.background
-        : "#ffffff",
-      borderRadius: "10px",
-      padding: "11px 12px",
-      cursor: "pointer",
-      textAlign: "left",
+
+      background:
+        active
+          ? c.background
+          : "#fff",
+
+      borderRadius:
+        10,
+
+      padding:
+        "8px 10px",
+
+      cursor:
+        "pointer",
+
+      textAlign:
+        "left",
     };
   };
 
-  // =========================================================
-  // PANEL CARD
-  // =========================================================
+  /* =========================================================
+     PANEL CARD
+  ========================================================= */
 
-  const renderPanelCard = (
-    panel,
-    index
-  ) => {
-    const active =
-      String(panel.id) ===
-      String(selectedPanelId);
+  const renderPanelCard =
+    (
+      panel,
+      index
+    ) => {
+      const active =
+        String(
+          panel.id
+        ) ===
+        String(
+          selectedPanelId
+        );
 
-    const isInOpenPacket =
-      openPacket?.panelIds?.some(
-        (id) =>
-          String(id) ===
-          String(panel.id)
-      );
+      const isInOpenPacket =
+        openPacket?.panelIds?.some(
+          (id) =>
+            String(id) ===
+            String(panel.id)
+        );
 
-    return (
-      <div
-        key={
-          panel.id ||
-          `${index}-${getPanelLabel(
-            panel
-          )}`
-        }
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: "8px",
-          border: active
-            ? "1px solid #2563eb"
-            : "1px solid #e5e7eb",
-          background: active
-            ? "#eff6ff"
-            : "#ffffff",
-          borderRadius: "9px",
-          padding: "9px 10px",
-          minHeight: "50px",
-        }}
-      >
-        <button
+      const remarks =
+        getPanelRemarks(
+          panel
+        );
+
+      return (
+        <div
+          key={
+            panel.id ||
+            `${index}-${getPanelLabel(
+              panel
+            )}`
+          }
           onClick={() =>
-            handleSelectPanel(panel)
+            handleSelectPanel(
+              panel
+            )
           }
           style={{
-            flex: "1",
-            minWidth: "0",
-            border: "none",
-            background: "transparent",
-            padding: "0",
-            cursor: "pointer",
-            textAlign: "left",
+            border: active
+              ? "2px solid #2563eb"
+              : "1px solid #e5e7eb",
+
+            background: active
+              ? "#eff6ff"
+              : "#fff",
+
+            borderRadius: 9,
+
+            padding:
+              "9px 10px",
+
+            cursor:
+              "pointer",
+
+            minHeight: 68,
+
+            boxShadow: active
+              ? "0 2px 8px rgba(37,99,235,0.08)"
+              : "none",
           }}
         >
-          <strong
+          <div
             style={{
-              display: "block",
-              fontSize: "13px",
-              color: "#111827",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
+              display:
+                "flex",
+
+              justifyContent:
+                "space-between",
+
+              alignItems:
+                "flex-start",
+
+              gap: 7,
             }}
           >
-            {getPanelLabel(
-              panel,
-              index
+            <strong
+              style={{
+                fontSize:
+                  14,
+
+                lineHeight:
+                  1.15,
+
+                color:
+                  "#111827",
+
+                overflow:
+                  "hidden",
+
+                textOverflow:
+                  "ellipsis",
+
+                whiteSpace:
+                  "nowrap",
+
+                flex: 1,
+              }}
+            >
+              {getPanelLabel(
+                panel,
+                index
+              )}
+            </strong>
+
+            {isInOpenPacket && (
+              <span
+                style={{
+                  flexShrink: 0,
+
+                  fontSize: 8,
+
+                  background:
+                    "#fff7ed",
+
+                  color:
+                    "#c2410c",
+
+                  padding:
+                    "3px 5px",
+
+                  borderRadius:
+                    4,
+
+                  fontWeight:
+                    800,
+                }}
+              >
+                OPEN
+              </span>
             )}
-          </strong>
+          </div>
 
-          <small
+          <div
             style={{
-              display: "block",
-              marginTop: "3px",
-              color: "#6b7280",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
+              marginTop: 5,
+
+              fontSize: 12,
+
+              color:
+                "#374151",
+
+              fontWeight: 700,
+
+              lineHeight:
+                1.25,
             }}
           >
-            {getPanelDescription(
+            {getPanelDimensions(
               panel
-            ) || "Panel data"}
-          </small>
-        </button>
+            )}
 
-        {isInOpenPacket && (
-          <span
+            {panel?.quantity !=
+              null
+              ? ` • Qty ${panel.quantity}`
+              : ""}
+          </div>
+
+          {remarks && (
+            <div
+              style={{
+                marginTop: 4,
+
+                fontSize: 10,
+
+                color:
+                  "#6b7280",
+
+                whiteSpace:
+                  "nowrap",
+
+                overflow:
+                  "hidden",
+
+                textOverflow:
+                  "ellipsis",
+              }}
+            >
+              Remarks:
+              {" "}
+              {remarks}
+            </div>
+          )}
+        </div>
+      );
+    };
+
+  /* =========================================================
+     PANEL LIST
+  ========================================================= */
+
+  const renderPanelList =
+    (
+      list,
+      emptyText = "No panels"
+    ) => {
+      if (!list.length) {
+        return (
+          <div
             style={{
-              fontSize: "10px",
-              background: "#fff7ed",
-              color: "#c2410c",
-              padding: "4px 6px",
-              borderRadius: "5px",
-              fontWeight: "700",
+              height:
+                "100%",
+
+              minHeight:
+                160,
+
+              display:
+                "flex",
+
+              alignItems:
+                "center",
+
+              justifyContent:
+                "center",
+
+              textAlign:
+                "center",
+
+              color:
+                "#6b7280",
+
+              border:
+                "1px dashed #d1d5db",
+
+              borderRadius:
+                10,
+
+              padding:
+                20,
             }}
           >
-            OPEN
-          </span>
-        )}
-      </div>
-    );
-  };
+            <div>
+              <div
+                style={{
+                  fontSize:
+                    28,
 
-  // =========================================================
-  // PANEL LIST
-  // =========================================================
+                  marginBottom:
+                    6,
+                }}
+              >
+                ✓
+              </div>
 
-  const renderPanelList = (
-    list,
-    emptyText = "No panels"
-  ) => {
-    if (list.length === 0) {
+              <strong>
+                {
+                  emptyText
+                }
+              </strong>
+            </div>
+          </div>
+        );
+      }
+
       return (
         <div
           style={{
-            height: "100%",
-            minHeight: "180px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            textAlign: "center",
-            color: "#6b7280",
-            border: "1px dashed #d1d5db",
-            borderRadius: "10px",
-            padding: "20px",
+            display:
+              "grid",
+
+            gridTemplateColumns:
+              "repeat(auto-fill, minmax(250px, 1fr))",
+
+            gap: 8,
+
+            overflowY:
+              "auto",
+
+            height:
+              "100%",
+
+            paddingRight:
+              3,
+
+            alignContent:
+              "start",
           }}
         >
-          <div>
-            <div
-              style={{
-                fontSize: "30px",
-                marginBottom: "7px",
-              }}
-            >
-              ✓
-            </div>
-
-            <strong>
-              {emptyText}
-            </strong>
-          </div>
+          {list.map(
+            renderPanelCard
+          )}
         </div>
       );
-    }
+    };
 
-    return (
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns:
-            "repeat(auto-fill, minmax(220px, 1fr))",
-          gap: "8px",
-          overflowY: "auto",
-          maxHeight: "100%",
-          paddingRight: "3px",
-        }}
-      >
-        {list.map(
-          (panel, index) =>
-            renderPanelCard(
-              panel,
-              index
-            )
-        )}
-      </div>
-    );
-  };
-
-  // =========================================================
-  // CURRENT OPEN PACKET
-  // =========================================================
+  /* =========================================================
+     OPEN PACKET PANEL
+  ========================================================= */
 
   const renderOpenPacketPanels =
     () => {
-      if (!openPacket) {
+      if (!openPacket)
         return null;
-      }
 
       const packetPanels =
         getPacketPanels(
@@ -2782,36 +3029,64 @@ function QRTracking() {
       return (
         <div
           style={{
-            marginBottom: "10px",
-            border: "1px solid #fed7aa",
-            background: "#fff7ed",
-            borderRadius: "10px",
-            padding: "10px",
+            marginBottom:
+              8,
+
+            border:
+              "1px solid #fed7aa",
+
+            background:
+              "#fff7ed",
+
+            borderRadius:
+              9,
+
+            padding: 8,
           }}
         >
           <div
             style={{
-              display: "flex",
+              display:
+                "flex",
+
               justifyContent:
                 "space-between",
-              alignItems: "center",
-              marginBottom: "8px",
+
+              alignItems:
+                "center",
+
+              marginBottom:
+                6,
+
+              gap: 8,
             }}
           >
             <div>
               <strong
                 style={{
-                  color: "#c2410c",
+                  color:
+                    "#c2410c",
+
+                  fontSize:
+                    12,
                 }}
               >
-                📦 {openPacket.id}
+                📦{" "}
+                {
+                  openPacket.id
+                }
               </strong>
 
               <div
                 style={{
-                  fontSize: "11px",
-                  color: "#6b7280",
-                  marginTop: "2px",
+                  fontSize:
+                    9,
+
+                  color:
+                    "#6b7280",
+
+                  marginTop:
+                    2,
                 }}
               >
                 {
@@ -2822,91 +3097,157 @@ function QRTracking() {
                 1
                   ? ""
                   : "s"}{" "}
-                in current packet
+                in current
+                packet
               </div>
             </div>
 
-            <button
-              disabled={
-                actionLoading
-              }
-              onClick={
-                handleClosePacket
-              }
+            <div
               style={{
-                border:
-                  "1px solid #16a34a",
-                background:
-                  "#f0fdf4",
-                color:
-                  "#15803d",
-                borderRadius:
-                  "7px",
-                padding:
-                  "7px 11px",
-                fontWeight:
-                  "800",
-                cursor:
-                  actionLoading
-                    ? "not-allowed"
-                    : "pointer",
+                display:
+                  "flex",
+
+                gap: 5,
               }}
             >
-              ✓ Close Packet
-            </button>
+              <button
+                disabled={
+                  actionLoading
+                }
+                onClick={
+                  handleClosePacket
+                }
+                style={{
+                  border:
+                    "1px solid #16a34a",
+
+                  background:
+                    "#f0fdf4",
+
+                  color:
+                    "#15803d",
+
+                  borderRadius:
+                    6,
+
+                  padding:
+                    "6px 9px",
+
+                  fontWeight:
+                    800,
+
+                  cursor:
+                    actionLoading
+                      ? "not-allowed"
+                      : "pointer",
+
+                  fontSize:
+                    10,
+                }}
+              >
+                ✓ CLOSE &
+                PRINT
+              </button>
+
+              <button
+                disabled={
+                  actionLoading
+                }
+                onClick={
+                  handleDeleteOpenPacket
+                }
+                style={{
+                  width: 30,
+
+                  height: 30,
+
+                  border:
+                    "1px solid #fecaca",
+
+                  background:
+                    "#fff",
+
+                  color:
+                    "#dc2626",
+
+                  borderRadius:
+                    6,
+
+                  fontWeight:
+                    800,
+
+                  cursor:
+                    actionLoading
+                      ? "not-allowed"
+                      : "pointer",
+                }}
+              >
+                ×
+              </button>
+            </div>
           </div>
 
           <div
             style={{
-              maxHeight: "150px",
-              overflowY: "auto",
-              display: "grid",
-              gap: "5px",
+              maxHeight:
+                74,
+
+              overflowY:
+                "auto",
+
+              display:
+                "grid",
+
+              gap: 3,
             }}
           >
             {packetPanels.map(
-              (panel, index) => (
+              (
+                panel,
+                index
+              ) => (
                 <div
                   key={
                     panel.id
                   }
                   style={{
-                    display: "flex",
+                    display:
+                      "flex",
+
                     justifyContent:
                       "space-between",
+
                     alignItems:
                       "center",
-                    gap: "8px",
+
+                    gap: 8,
+
                     background:
-                      "#ffffff",
+                      "#fff",
+
                     border:
                       "1px solid #e5e7eb",
+
                     borderRadius:
-                      "6px",
+                      5,
+
                     padding:
-                      "6px 8px",
+                      "4px 6px",
                   }}
                 >
-                  <div
+                  <strong
                     style={{
-                      minWidth:
-                        "0",
+                      fontSize:
+                        10,
                     }}
                   >
-                    <strong
-                      style={{
-                        fontSize:
-                          "11px",
-                      }}
-                    >
-                      {index +
-                        1}
-                      .{" "}
-                      {getPanelLabel(
-                        panel
-                      )}
-                    </strong>
-                  </div>
+                    {index +
+                      1}
+                    .{" "}
+                    {getPanelLabel(
+                      panel
+                    )}
+                  </strong>
 
                   <button
                     disabled={
@@ -2918,24 +3259,28 @@ function QRTracking() {
                       )
                     }
                     style={{
-                      flexShrink:
-                        0,
                       border:
                         "1px solid #fecaca",
+
                       background:
-                        "#ffffff",
+                        "#fff",
+
                       color:
                         "#dc2626",
+
                       borderRadius:
-                        "5px",
+                        4,
+
                       padding:
-                        "3px 7px",
+                        "2px 6px",
+
                       cursor:
                         actionLoading
                           ? "not-allowed"
                           : "pointer",
+
                       fontWeight:
-                        "700",
+                        700,
                     }}
                   >
                     ×
@@ -2948,52 +3293,228 @@ function QRTracking() {
       );
     };
 
-  // =========================================================
-  // PACKET LIST
-  // =========================================================
+  /* =========================================================
+     PACKET CARD
+     
+     IMPORTANT:
+     Packet QR is intentionally NOT visible here.
+  ========================================================= */
 
-  const renderPacketList =
+  const renderPacketCard =
+    (packet) => {
+      const active =
+        String(
+          selectedPacketId
+        ) ===
+        String(
+          packet.id
+        );
+
+      const dispatched =
+        isPacketDispatched(
+          packet
+        );
+
+      return (
+        <button
+          key={
+            packet.dbId ||
+            packet.packetId ||
+            packet.id
+          }
+          onClick={() => {
+            setSelectedPacketId(
+              packet.id
+            );
+
+            setSelectedPanelId(
+              null
+            );
+
+            setActiveView(
+              "packets"
+            );
+          }}
+          style={{
+            width:
+              "100%",
+
+            minHeight:
+              70,
+
+            border: active
+              ? "2px solid #2563eb"
+              : "1px solid #e5e7eb",
+
+            background:
+              active
+                ? "#eff6ff"
+                : "#fff",
+
+            borderRadius:
+              8,
+
+            padding:
+              "13px 12px",
+
+            cursor:
+              "pointer",
+
+            textAlign:
+              "left",
+
+            display:
+              "flex",
+
+            alignItems:
+              "center",
+
+            justifyContent:
+              "space-between",
+
+            gap: 10,
+
+            transition:
+              "all 0.15s ease",
+          }}
+        >
+          <strong
+            style={{
+              fontSize:
+                14,
+
+              color:
+                "#111827",
+
+              overflow:
+                "hidden",
+
+              textOverflow:
+                "ellipsis",
+
+              whiteSpace:
+                "nowrap",
+
+              flex: 1,
+            }}
+          >
+            {packet.id}
+          </strong>
+
+          <span
+            style={{
+              flexShrink:
+                0,
+
+              fontSize:
+                8,
+
+              padding:
+                "4px 7px",
+
+              borderRadius:
+                4,
+
+              fontWeight:
+                800,
+
+              background:
+                dispatched
+                  ? "#dcfce7"
+                  : "#dbeafe",
+
+              color:
+                dispatched
+                  ? "#15803d"
+                  : "#1d4ed8",
+            }}
+          >
+            {dispatched
+              ? "DISPATCHED"
+              : "READY"}
+          </span>
+        </button>
+      );
+    };
+
+  /* =========================================================
+     PACKET HISTORY
+     
+     READY FIRST
+     DISPATCHED SECOND
+     
+     3 COLUMNS
+  ========================================================= */
+
+  const renderPacketHistory =
     () => {
-      if (
-        closedPackets.length ===
-        0
-      ) {
+      const hasPackets =
+        readyPackets.length >
+          0 ||
+        dispatchedPackets.length >
+          0;
+
+      if (!hasPackets) {
         return (
           <div
             style={{
-              height: "100%",
-              minHeight: "180px",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              textAlign: "center",
-              color: "#6b7280",
-              border: "1px dashed #d1d5db",
-              borderRadius: "10px",
+              height:
+                "100%",
+
+              minHeight:
+                180,
+
+              display:
+                "flex",
+
+              alignItems:
+                "center",
+
+              justifyContent:
+                "center",
+
+              textAlign:
+                "center",
+
+              color:
+                "#6b7280",
+
+              border:
+                "1px dashed #d1d5db",
+
+              borderRadius:
+                10,
             }}
           >
             <div>
               <div
                 style={{
-                  fontSize: "32px",
-                  marginBottom: "7px",
+                  fontSize:
+                    30,
+
+                  marginBottom:
+                    6,
                 }}
               >
                 📦
               </div>
 
               <strong>
-                No closed packets yet
+                No packet history yet
               </strong>
 
               <div
                 style={{
-                  fontSize: "12px",
-                  marginTop: "5px",
+                  fontSize:
+                    11,
+
+                  marginTop:
+                    4,
                 }}
               >
-                Scan panels and close
-                the packet when ready.
+                Scan panels and
+                close packets when
+                ready.
               </div>
             </div>
           </div>
@@ -3003,162 +3524,463 @@ function QRTracking() {
       return (
         <div
           style={{
-            display: "grid",
-            gridTemplateColumns:
-              "repeat(auto-fill, minmax(220px, 1fr))",
-            gap: "9px",
-            overflowY: "auto",
-            maxHeight: "100%",
+            height:
+              "100%",
+
+            display:
+              "flex",
+
+            flexDirection:
+              "column",
+
+            minHeight:
+              0,
+
+            overflowY:
+              "auto",
+
+            paddingRight:
+              2,
           }}
         >
-          {closedPackets.map(
-            (packet) => {
-              const active =
-                String(
-                  selectedPacketId
-                ) ===
-                String(packet.id);
+          {/* PACKET SUMMARY */}
 
-              return (
-                <div
-                  key={
-                    packet.dbId ||
-                    packet.packetId ||
-                    packet.id
-                  }
+          <div
+            style={{
+              display:
+                "grid",
+
+              gridTemplateColumns:
+                "repeat(3, minmax(0, 1fr))",
+
+              gap: 7,
+
+              marginBottom:
+                10,
+
+              flexShrink:
+                0,
+            }}
+          >
+            <div
+              style={{
+                border:
+                  "1px solid #e5e7eb",
+
+                borderRadius:
+                  7,
+
+                padding:
+                  "6px 8px",
+
+                background:
+                  "#fff",
+              }}
+            >
+              <small
+                style={{
+                  color:
+                    "#6b7280",
+
+                  fontWeight:
+                    700,
+
+                  fontSize:
+                    8,
+                }}
+              >
+                TOTAL PACKETS
+              </small>
+
+              <strong
+                style={{
+                  display:
+                    "block",
+
+                  marginTop:
+                    1,
+
+                  fontSize:
+                    18,
+                }}
+              >
+                {
+                  totalPackets
+                }
+              </strong>
+            </div>
+
+            <div
+              style={{
+                border:
+                  "1px solid #bbf7d0",
+
+                borderRadius:
+                  7,
+
+                padding:
+                  "6px 8px",
+
+                background:
+                  "#f0fdf4",
+              }}
+            >
+              <small
+                style={{
+                  color:
+                    "#15803d",
+
+                  fontWeight:
+                    700,
+
+                  fontSize:
+                    8,
+                }}
+              >
+                READY
+              </small>
+
+              <strong
+                style={{
+                  display:
+                    "block",
+
+                  marginTop:
+                    1,
+
+                  fontSize:
+                    18,
+
+                  color:
+                    "#2563eb",
+                }}
+              >
+                {
+                  readyPacketCount
+                }
+              </strong>
+            </div>
+
+            <div
+              style={{
+                border:
+                  "1px solid #bbf7d0",
+
+                borderRadius:
+                  7,
+
+                padding:
+                  "6px 8px",
+
+                background:
+                  "#f0fdf4",
+              }}
+            >
+              <small
+                style={{
+                  color:
+                    "#15803d",
+
+                  fontWeight:
+                    700,
+
+                  fontSize:
+                    8,
+                }}
+              >
+                DISPATCHED
+              </small>
+
+              <strong
+                style={{
+                  display:
+                    "block",
+
+                  marginTop:
+                    1,
+
+                  fontSize:
+                    18,
+
+                  color:
+                    "#16a34a",
+                }}
+              >
+                {
+                  dispatchedPacketCount
+                }
+              </strong>
+            </div>
+          </div>
+
+          {/* READY */}
+
+          {readyPackets.length >
+            0 && (
+            <div
+              style={{
+                marginBottom:
+                  14,
+              }}
+            >
+              <div
+                style={{
+                  display:
+                    "flex",
+
+                  alignItems:
+                    "center",
+
+                  gap: 7,
+
+                  marginBottom:
+                    7,
+                }}
+              >
+                <span
                   style={{
-                    border:
-                      active
-                        ? "1px solid #7c3aed"
-                        : "1px solid #e5e7eb",
-                    background:
-                      active
-                        ? "#f5f3ff"
-                        : "#ffffff",
+                    width: 7,
+
+                    height: 7,
+
                     borderRadius:
-                      "10px",
-                    padding:
-                      "13px",
+                      "50%",
+
+                    background:
+                      "#2563eb",
+                  }}
+                />
+
+                <strong
+                  style={{
+                    fontSize:
+                      13,
+
+                    color:
+                      "#1d4ed8",
                   }}
                 >
-                  <button
-                    onClick={() => {
-                      setSelectedPacketId(
-                        packet.id
-                      );
+                  READY
+                </strong>
 
-                      setSelectedPanelId(
-                        null
-                      );
-                    }}
-                    style={{
-                      width:
-                        "100%",
-                      border:
-                        "none",
-                      background:
-                        "transparent",
-                      cursor:
-                        "pointer",
-                      textAlign:
-                        "left",
-                    }}
-                  >
-                    <strong>
-                      📦{" "}
-                      {
-                        packet.id
-                      }
-                    </strong>
+                <span
+                  style={{
+                    fontSize:
+                      10,
 
-                    <small
-                      style={{
-                        display:
-                          "block",
-                        marginTop:
-                          "6px",
-                        color:
-                          "#6b7280",
-                      }}
-                    >
-                      {
-                        packet
-                          .panelIds
-                          ?.length ||
-                        0
-                      }{" "}
-                      panels
-                    </small>
+                    color:
+                      "#6b7280",
+                  }}
+                >
+                  {
+                    readyPacketCount
+                  }{" "}
+                  packet
+                  {readyPacketCount ===
+                  1
+                    ? ""
+                    : "s"}
+                </span>
+              </div>
 
-                    <small
-                      style={{
-                        display:
-                          "block",
-                        marginTop:
-                          "4px",
-                        color:
-                          "#16a34a",
-                        fontWeight:
-                          "700",
-                      }}
-                    >
-                      ✓ Closed
-                    </small>
-                  </button>
+              <div
+                style={{
+                  display:
+                    "grid",
 
-                </div>
-              );
-            }
+                  gridTemplateColumns:
+                    "repeat(3, minmax(0, 1fr))",
+
+                  gap: 7,
+                }}
+              >
+                {readyPackets.map(
+                  renderPacketCard
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* DISPATCHED */}
+
+          {dispatchedPackets.length >
+            0 && (
+            <div>
+              <div
+                style={{
+                  display:
+                    "flex",
+
+                  alignItems:
+                    "center",
+
+                  gap: 7,
+
+                  marginBottom:
+                    7,
+                }}
+              >
+                <span
+                  style={{
+                    width: 7,
+
+                    height: 7,
+
+                    borderRadius:
+                      "50%",
+
+                    background:
+                      "#16a34a",
+                  }}
+                />
+
+                <strong
+                  style={{
+                    fontSize:
+                      13,
+
+                    color:
+                      "#15803d",
+                  }}
+                >
+                  DISPATCHED
+                </strong>
+
+                <span
+                  style={{
+                    fontSize:
+                      10,
+
+                    color:
+                      "#6b7280",
+                  }}
+                >
+                  {
+                    dispatchedPacketCount
+                  }{" "}
+                  packet
+                  {dispatchedPacketCount ===
+                  1
+                    ? ""
+                    : "s"}
+                </span>
+              </div>
+
+              <div
+                style={{
+                  display:
+                    "grid",
+
+                  gridTemplateColumns:
+                    "repeat(3, minmax(0, 1fr))",
+
+                  gap: 7,
+                }}
+              >
+                {dispatchedPackets.map(
+                  renderPacketCard
+                )}
+              </div>
+            </div>
           )}
         </div>
       );
     };
 
-  // =========================================================
-  // SELECTED CLOSED PACKET
-  // =========================================================
+  /* =========================================================
+     SELECTED PACKET DETAILS
+     
+     QR IMAGE IS NOT SHOWN.
+     PRINT BUTTON IS SHOWN.
+  ========================================================= */
 
   const renderSelectedPacket =
     () => {
-      if (!selectedPacket) {
+      if (!selectedPacket)
         return null;
-      }
 
       const packetPanels =
-        getPacketPanels(selectedPacket);
+        getPacketPanels(
+          selectedPacket
+        );
+
+      const dispatched =
+        isPacketDispatched(
+          selectedPacket
+        );
 
       return (
         <div
           style={{
-            height: "100%",
-            display: "flex",
-            flexDirection: "column",
-            minHeight: "0",
+            height:
+              "100%",
+
+            display:
+              "flex",
+
+            flexDirection:
+              "column",
+
+            minHeight:
+              0,
           }}
         >
-          {/* PACKET HEADER */}
+          {/* HEADER */}
+
           <div
             style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              gap: "10px",
-              marginBottom: "10px",
+              display:
+                "flex",
+
+              justifyContent:
+                "space-between",
+
+              alignItems:
+                "center",
+
+              gap: 8,
+
+              marginBottom:
+                8,
+
+              flexShrink:
+                0,
             }}
           >
             <button
               onClick={() => {
-                setSelectedPacketId(null);
-                setSelectedPanelId(null);
+                setSelectedPacketId(
+                  null
+                );
+
+                setSelectedPanelId(
+                  null
+                );
               }}
               style={{
-                border: "1px solid #d1d5db",
-                background: "#ffffff",
-                color: "#374151",
-                borderRadius: "7px",
-                padding: "7px 11px",
-                cursor: "pointer",
-                fontWeight: "800",
+                border:
+                  "1px solid #d1d5db",
+
+                background:
+                  "#fff",
+
+                color:
+                  "#374151",
+
+                borderRadius:
+                  6,
+
+                padding:
+                  "7px 10px",
+
+                cursor:
+                  "pointer",
+
+                fontWeight:
+                  800,
+
+                fontSize:
+                  10,
               }}
             >
               ← Back
@@ -3167,364 +3989,570 @@ function QRTracking() {
             <div
               style={{
                 flex: 1,
-                minWidth: 0,
-                textAlign: "center",
+
+                minWidth:
+                  0,
+
+                textAlign:
+                  "center",
               }}
             >
               <small
                 style={{
-                  color: "#7c3aed",
-                  fontWeight: "700",
+                  color:
+                    dispatched
+                      ? "#16a34a"
+                      : "#2563eb",
+
+                  fontWeight:
+                    800,
+
+                  fontSize:
+                    9,
                 }}
               >
-                CLOSED PACKET
+                {dispatched
+                  ? "DISPATCHED PACKET"
+                  : "READY PACKET"}
               </small>
 
               <h3
                 style={{
-                  margin: "2px 0 0",
-                  fontSize: "18px",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
+                  margin:
+                    "2px 0 0",
+
+                  fontSize:
+                    17,
+
+                  overflow:
+                    "hidden",
+
+                  textOverflow:
+                    "ellipsis",
+
+                  whiteSpace:
+                    "nowrap",
                 }}
               >
-                📦 {selectedPacket.id}
+                {selectedPacket.id}
               </h3>
             </div>
 
+            {/* PRINT PACKET QR */}
+
             <button
-              disabled={actionLoading}
+              disabled={
+                actionLoading
+              }
               onClick={() =>
-                handleDeleteClosedPacket(selectedPacket)
+                printPacketLabel(
+                  selectedPacket,
+                  selectedSite
+                )
               }
               style={{
-                border: "1px solid #fecaca",
-                background: "#ffffff",
-                color: "#dc2626",
-                borderRadius: "7px",
-                padding: "7px 10px",
-                cursor: actionLoading
-                  ? "not-allowed"
-                  : "pointer",
-                fontWeight: "700",
+                border:
+                  "1px solid #2563eb",
+
+                background:
+                  "#eff6ff",
+
+                color:
+                  "#1d4ed8",
+
+                borderRadius:
+                  6,
+
+                padding:
+                  "7px 10px",
+
+                cursor:
+                  actionLoading
+                    ? "not-allowed"
+                    : "pointer",
+
+                fontWeight:
+                  800,
+
+                fontSize:
+                  10,
+
+                whiteSpace:
+                  "nowrap",
+              }}
+            >
+              🖨 Print Packet QR
+            </button>
+          </div>
+
+          {/* DISPATCH TIME */}
+
+          {dispatched &&
+            getDispatchTimestamp(
+              selectedPacket
+            ) && (
+              <div
+                style={{
+                  marginBottom:
+                    7,
+
+                  padding:
+                    "6px 8px",
+
+                  border:
+                    "1px solid #bbf7d0",
+
+                  background:
+                    "#f0fdf4",
+
+                  borderRadius:
+                    6,
+
+                  color:
+                    "#166534",
+
+                  fontSize:
+                    10,
+
+                  fontWeight:
+                    700,
+
+                  flexShrink:
+                    0,
+                }}
+              >
+                ✓ Dispatched:{" "}
+                {formatDateTime(
+                  getDispatchTimestamp(
+                    selectedPacket
+                  )
+                )}
+              </div>
+            )}
+
+          {/* PACKET INFO */}
+
+          <div
+            style={{
+              marginBottom:
+                7,
+
+              padding:
+                "8px 10px",
+
+              border:
+                "1px solid #e5e7eb",
+
+              background:
+                "#f8fafc",
+
+              borderRadius:
+                7,
+
+              display:
+                "flex",
+
+              alignItems:
+                "center",
+
+              justifyContent:
+                "space-between",
+
+              gap: 10,
+
+              flexShrink:
+                0,
+            }}
+          >
+            <div>
+              <div
+                style={{
+                  fontSize:
+                    8,
+
+                  color:
+                    "#6b7280",
+
+                  fontWeight:
+                    700,
+                }}
+              >
+                PACKET
+              </div>
+
+              <strong
+                style={{
+                  fontSize:
+                    13,
+                }}
+              >
+                {
+                  selectedPacket.id
+                }
+              </strong>
+            </div>
+
+            <div
+              style={{
+                textAlign:
+                  "right",
+              }}
+            >
+              <div
+                style={{
+                  fontSize:
+                    8,
+
+                  color:
+                    "#6b7280",
+
+                  fontWeight:
+                    700,
+                }}
+              >
+                PANELS
+              </div>
+
+              <strong
+                style={{
+                  fontSize:
+                    16,
+
+                  color:
+                    "#2563eb",
+                }}
+              >
+                {
+                  packetPanels.length
+                }
+              </strong>
+            </div>
+          </div>
+
+          {/* PANELS */}
+
+          <div
+            style={{
+              flex: 1,
+
+              minHeight:
+                0,
+
+              border:
+                "1px solid #e5e7eb",
+
+              borderRadius:
+                9,
+
+              background:
+                "#fff",
+
+              padding: 9,
+
+              display:
+                "flex",
+
+              flexDirection:
+                "column",
+            }}
+          >
+            <div
+              style={{
+                display:
+                  "flex",
+
+                justifyContent:
+                  "space-between",
+
+                alignItems:
+                  "center",
+
+                marginBottom:
+                  7,
+              }}
+            >
+              <strong
+                style={{
+                  fontSize:
+                    15,
+                }}
+              >
+                Panels in Packet
+              </strong>
+
+              <span
+                style={{
+                  fontSize:
+                    13,
+
+                  fontWeight:
+                    800,
+
+                  color:
+                    "#2563eb",
+                }}
+              >
+                {
+                  packetPanels.length
+                }
+              </span>
+            </div>
+
+            <div
+              style={{
+                flex: 1,
+
+                minHeight:
+                  0,
+
+                overflowY:
+                  "auto",
+
+                display:
+                  "grid",
+
+                gridTemplateColumns:
+                  "repeat(auto-fill, minmax(270px, 1fr))",
+
+                gap: 7,
+
+                alignContent:
+                  "start",
+              }}
+            >
+              {packetPanels.map(
+                (
+                  panel,
+                  index
+                ) => (
+                  <div
+                    key={
+                      panel.id ||
+                      `${selectedPacket.id}-${index}`
+                    }
+                    onClick={() =>
+                      handleSelectPanel(
+                        panel
+                      )
+                    }
+                    style={{
+                      border:
+                        String(
+                          selectedPanelId
+                        ) ===
+                        String(
+                          panel.id
+                        )
+                          ? "2px solid #2563eb"
+                          : "1px solid #e5e7eb",
+
+                      background:
+                        String(
+                          selectedPanelId
+                        ) ===
+                        String(
+                          panel.id
+                        )
+                          ? "#eff6ff"
+                          : "#fff",
+
+                      borderRadius:
+                        8,
+
+                      padding:
+                        9,
+
+                      cursor:
+                        "pointer",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display:
+                          "flex",
+
+                        justifyContent:
+                          "space-between",
+
+                        gap: 7,
+                      }}
+                    >
+                      <strong
+                        style={{
+                          fontSize:
+                            13,
+                        }}
+                      >
+                        {index +
+                          1}
+                        .{" "}
+                        {getPanelNameForPrint(
+                          panel
+                        )}
+                      </strong>
+
+                      <span
+                        style={{
+                          fontSize:
+                            9,
+
+                          fontWeight:
+                            700,
+
+                          color:
+                            "#6b7280",
+                        }}
+                      >
+                        {getPanelLabelNumberForPrint(
+                          panel
+                        )}
+                      </span>
+                    </div>
+
+                    <div
+                      style={{
+                        marginTop:
+                          5,
+
+                        fontSize:
+                          10,
+
+                        color:
+                          "#6b7280",
+                      }}
+                    >
+                      Section:{" "}
+                      {getPanelSectionForPrint(
+                        panel
+                      )}
+                    </div>
+
+                    <div
+                      style={{
+                        marginTop:
+                          6,
+
+                        display:
+                          "inline-block",
+
+                        padding:
+                          "4px 6px",
+
+                        background:
+                          "#f8fafc",
+
+                        border:
+                          "1px solid #e5e7eb",
+
+                        borderRadius:
+                          4,
+
+                        fontSize:
+                          10,
+
+                        fontWeight:
+                          800,
+
+                        color:
+                          "#374151",
+                      }}
+                    >
+                      {getPanelDimensions(
+                        panel
+                      )}
+                    </div>
+
+                    {getPanelRemarks(
+                      panel
+                    ) && (
+                      <div
+                        style={{
+                          marginTop:
+                            5,
+
+                          fontSize:
+                            9,
+
+                          color:
+                            "#6b7280",
+                        }}
+                      >
+                        Remarks:{" "}
+                        {getPanelRemarks(
+                          panel
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              )}
+            </div>
+          </div>
+
+          {/* DELETE */}
+
+          <div
+            style={{
+              marginTop:
+                7,
+
+              display:
+                "flex",
+
+              justifyContent:
+                "flex-end",
+
+              flexShrink:
+                0,
+            }}
+          >
+            <button
+              disabled={
+                actionLoading
+              }
+              onClick={() =>
+                handleDeleteClosedPacket(
+                  selectedPacket
+                )
+              }
+              style={{
+                border:
+                  "1px solid #fecaca",
+
+                background:
+                  "#fff",
+
+                color:
+                  "#dc2626",
+
+                borderRadius:
+                  6,
+
+                padding:
+                  "6px 10px",
+
+                cursor:
+                  actionLoading
+                    ? "not-allowed"
+                    : "pointer",
+
+                fontWeight:
+                  700,
+
+                fontSize:
+                  10,
               }}
             >
               Delete Packet
             </button>
           </div>
-
-          {/* QR + PANEL DETAILS */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "190px minmax(0, 1fr)",
-              gap: "12px",
-              flex: "1",
-              minHeight: "0",
-            }}
-          >
-            {/* QR CARD */}
-            <div
-              style={{
-                border: "1px solid #e5e7eb",
-                borderRadius: "10px",
-                background: "#ffffff",
-                padding: "10px",
-                textAlign: "center",
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: "9px",
-                  fontWeight: "800",
-                  letterSpacing: "0.08em",
-                  color: "#2563eb",
-                }}
-              >
-                PACKET QR
-              </div>
-
-              <img
-                src={getPacketQRImageUrl(
-                  getPacketQRValue(selectedPacket)
-                )}
-                alt={`QR for ${selectedPacket.id}`}
-                style={{
-                  width: "145px",
-                  height: "145px",
-                  maxWidth: "100%",
-                  objectFit: "contain",
-                  display: "block",
-                  margin: "8px auto 6px",
-                }}
-              />
-
-              <strong
-                style={{
-                  display: "block",
-                  fontSize: "12px",
-                  wordBreak: "break-word",
-                }}
-              >
-                {getPacketQRValue(selectedPacket) ||
-                  selectedPacket.id}
-              </strong>
-
-              <div
-                style={{
-                  marginTop: "4px",
-                  fontSize: "10px",
-                  color: "#6b7280",
-                }}
-              >
-                {packetPanels.length} panel
-                {packetPanels.length === 1 ? "" : "s"}
-              </div>
-
-              <button
-                disabled={!getPacketQRValue(selectedPacket)}
-                onClick={() =>
-                  printPacketLabel(
-                    selectedPacket,
-                    selectedSite
-                  )
-                }
-                style={{
-                  width: "100%",
-                  marginTop: "10px",
-                  minHeight: "38px",
-                  border: "none",
-                  borderRadius: "7px",
-                  background: "#2563eb",
-                  color: "#ffffff",
-                  fontWeight: "800",
-                  cursor: getPacketQRValue(selectedPacket)
-                    ? "pointer"
-                    : "not-allowed",
-                  opacity: getPacketQRValue(selectedPacket)
-                    ? 1
-                    : 0.5,
-                }}
-              >
-                🖨 Print Packet QR
-              </button>
-
-              <div
-                style={{
-                  marginTop: "8px",
-                  fontSize: "9px",
-                  lineHeight: 1.4,
-                  color: "#9ca3af",
-                }}
-              >
-                100 × 100 mm label
-                <br />
-                QR + panel details
-              </div>
-            </div>
-
-            {/* PANEL DETAILS */}
-            <div
-              style={{
-                border: "1px solid #e5e7eb",
-                borderRadius: "10px",
-                background: "#ffffff",
-                padding: "10px",
-                minWidth: 0,
-                display: "flex",
-                flexDirection: "column",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  marginBottom: "8px",
-                }}
-              >
-                <div>
-                  <strong
-                    style={{
-                      fontSize: "14px",
-                    }}
-                  >
-                    Panels in Packet
-                  </strong>
-
-                  <div
-                    style={{
-                      marginTop: "2px",
-                      fontSize: "10px",
-                      color: "#6b7280",
-                    }}
-                  >
-                    Panel name / section / label / dimensions
-                  </div>
-                </div>
-
-                <span
-                  style={{
-                    fontSize: "12px",
-                    fontWeight: "800",
-                    color: "#2563eb",
-                  }}
-                >
-                  {packetPanels.length}
-                </span>
-              </div>
-
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns:
-                    "minmax(150px, 1.4fr) minmax(100px, 1fr) minmax(70px, .7fr) 105px",
-                  gap: "6px",
-                  padding: "7px 8px",
-                  background: "#f8fafc",
-                  border: "1px solid #e5e7eb",
-                  borderRadius: "7px 7px 0 0",
-                  fontSize: "9px",
-                  fontWeight: "800",
-                  color: "#6b7280",
-                }}
-              >
-                <span>Panel / Section</span>
-                <span>Label Number</span>
-                <span>Panel QR</span>
-                <span>T / L / W</span>
-              </div>
-
-              <div
-                style={{
-                  flex: 1,
-                  minHeight: "0",
-                  overflowY: "auto",
-                  border: "1px solid #e5e7eb",
-                  borderTop: "none",
-                  borderRadius: "0 0 7px 7px",
-                }}
-              >
-                {packetPanels.length === 0 ? (
-                  <div
-                    style={{
-                      padding: "30px",
-                      textAlign: "center",
-                      color: "#9ca3af",
-                      fontSize: "12px",
-                    }}
-                  >
-                    No panel details found.
-                  </div>
-                ) : (
-                  packetPanels.map((panel, index) => (
-                    <div
-                      key={
-                        panel.id ||
-                        `${selectedPacket.id}-${index}`
-                      }
-                      onClick={() =>
-                        handleSelectPanel(panel)
-                      }
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns:
-                          "minmax(150px, 1.4fr) minmax(100px, 1fr) minmax(70px, .7fr) 105px",
-                        gap: "6px",
-                        alignItems: "center",
-                        padding: "8px",
-                        borderBottom:
-                          "1px solid #f1f5f9",
-                        background:
-                          String(selectedPanelId) ===
-                          String(panel.id)
-                            ? "#eff6ff"
-                            : "#ffffff",
-                        cursor: "pointer",
-                      }}
-                    >
-                      <div
-                        style={{
-                          minWidth: 0,
-                        }}
-                      >
-                        <strong
-                          style={{
-                            display: "block",
-                            fontSize: "11px",
-                            color: "#111827",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {getPanelNameForPrint(panel)}
-                        </strong>
-                        <span
-                          style={{
-                            display: "block",
-                            marginTop: "2px",
-                            fontSize: "9px",
-                            color: "#6b7280",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {getPanelSectionForPrint(panel)}
-                        </span>
-                      </div>
-
-                      <span
-                        style={{
-                          fontSize: "10px",
-                          fontWeight: "700",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {getPanelLabelNumberForPrint(panel)}
-                      </span>
-
-                      <span
-                        style={{
-                          fontSize: "9px",
-                          color: "#374151",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {getPanelLabel(panel, index)}
-                      </span>
-
-                      <span
-                        style={{
-                          fontSize: "9px",
-                          fontWeight: "700",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {getPanelThicknessForPrint(panel)} × {getPanelLengthForPrint(panel)} × {getPanelWidthForPrint(panel)}
-                      </span>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
         </div>
       );
     };
 
-  // =========================================================
-  // MAIN WORKSPACE
-  // =========================================================
+  /* =========================================================
+     WORKSPACE
+  ========================================================= */
 
   const renderWorkspace =
     () => {
@@ -3545,31 +4573,40 @@ function QRTracking() {
             style={{
               height:
                 "100%",
+
               display:
                 "flex",
+
               flexDirection:
                 "column",
+
               minHeight:
-                "0",
+                0,
             }}
           >
             <div
               style={{
                 display:
                   "flex",
+
                 justifyContent:
                   "space-between",
+
                 alignItems:
                   "center",
+
                 marginBottom:
-                  "9px",
+                  7,
+
+                flexShrink:
+                  0,
               }}
             >
               <div>
                 <strong
                   style={{
                     fontSize:
-                      "16px",
+                      16,
                   }}
                 >
                   Remaining Panels
@@ -3578,11 +4615,13 @@ function QRTracking() {
                 <div
                   style={{
                     fontSize:
-                      "11px",
+                      10,
+
                     color:
                       "#6b7280",
+
                     marginTop:
-                      "2px",
+                      2,
                   }}
                 >
                   Panels waiting to
@@ -3593,9 +4632,13 @@ function QRTracking() {
               <span
                 style={{
                   fontWeight:
-                    "700",
+                    800,
+
                   color:
                     "#2563eb",
+
+                  fontSize:
+                    16,
                 }}
               >
                 {
@@ -3608,10 +4651,10 @@ function QRTracking() {
 
             <div
               style={{
-                flex:
-                  "1",
+                flex: 1,
+
                 minHeight:
-                  "0",
+                  0,
               }}
             >
               {renderPanelList(
@@ -3632,31 +4675,40 @@ function QRTracking() {
             style={{
               height:
                 "100%",
+
               display:
                 "flex",
+
               flexDirection:
                 "column",
+
               minHeight:
-                "0",
+                0,
             }}
           >
             <div
               style={{
                 display:
                   "flex",
+
                 justifyContent:
                   "space-between",
+
                 alignItems:
                   "center",
+
                 marginBottom:
-                  "9px",
+                  7,
+
+                flexShrink:
+                  0,
               }}
             >
               <div>
                 <strong
                   style={{
                     fontSize:
-                      "16px",
+                      16,
                   }}
                 >
                   Packed Panels
@@ -3665,23 +4717,30 @@ function QRTracking() {
                 <div
                   style={{
                     fontSize:
-                      "11px",
+                      10,
+
                     color:
                       "#6b7280",
+
                     marginTop:
-                      "2px",
+                      2,
                   }}
                 >
-                  Panels already packed
+                  Panels already
+                  packed
                 </div>
               </div>
 
               <span
                 style={{
                   fontWeight:
-                    "700",
+                    800,
+
                   color:
                     "#16a34a",
+
+                  fontSize:
+                    16,
                 }}
               >
                 {
@@ -3690,9 +4749,18 @@ function QRTracking() {
               </span>
             </div>
 
-            {renderPanelList(
-              packedPanels
-            )}
+            <div
+              style={{
+                flex: 1,
+
+                minHeight:
+                  0,
+              }}
+            >
+              {renderPanelList(
+                packedPanels
+              )}
+            </div>
           </div>
         );
       }
@@ -3702,75 +4770,119 @@ function QRTracking() {
           style={{
             height:
               "100%",
+
             display:
               "flex",
+
             flexDirection:
               "column",
+
             minHeight:
-              "0",
+              0,
           }}
         >
           <div
             style={{
+              display:
+                "flex",
+
+              justifyContent:
+                "space-between",
+
+              alignItems:
+                "center",
+
               marginBottom:
-                "9px",
+                7,
+
+              flexShrink:
+                0,
             }}
           >
-            <strong
-              style={{
-                fontSize:
-                  "16px",
-              }}
-            >
-              Closed Packets
-            </strong>
+            <div>
+              <strong
+                style={{
+                  fontSize:
+                    16,
+                }}
+              >
+                Packet History
+              </strong>
 
-            <div
+              <div
+                style={{
+                  fontSize:
+                    10,
+
+                  color:
+                    "#6b7280",
+
+                  marginTop:
+                    2,
+                }}
+              >
+                Ready packets first •
+                dispatched packets below
+              </div>
+            </div>
+
+            <span
               style={{
-                fontSize:
-                  "11px",
+                fontWeight:
+                  800,
+
                 color:
-                  "#6b7280",
-                marginTop:
-                  "2px",
+                  "#7c3aed",
+
+                fontSize:
+                  16,
               }}
             >
-              Select a packet to see
-              its panels
-            </div>
+              {
+                totalPackets
+              }
+            </span>
           </div>
 
           <div
             style={{
-              flex:
-                "1",
+              flex: 1,
+
               minHeight:
-                "0",
+                0,
             }}
           >
-            {renderPacketList()}
+            {renderPacketHistory()}
           </div>
         </div>
       );
     };
 
-  // =========================================================
-  // LOADING
-  // =========================================================
+  /* =========================================================
+     LOADING
+  ========================================================= */
 
   if (loading) {
     return (
       <div
         style={{
-          width: "100%",
-          padding: "50px",
-          textAlign: "center",
+          width:
+            "100%",
+
+          padding:
+            50,
+
+          textAlign:
+            "center",
         }}
       >
         <div
           style={{
-            fontSize: "30px",
-            marginBottom: "10px",
+            fontSize:
+              30,
+
+            marginBottom:
+              10,
           }}
         >
           ⟳
@@ -3782,45 +4894,70 @@ function QRTracking() {
 
         <p
           style={{
-            color: "#6b7280",
-            fontSize: "13px",
+            color:
+              "#6b7280",
+
+            fontSize:
+              13,
           }}
         >
-          Reading sites, panels and
-          packets from Supabase.
+          Reading sites,
+          panels and packets
+          from Supabase.
         </p>
       </div>
     );
   }
 
-  // =========================================================
-  // NO SITES
-  // =========================================================
+  /* =========================================================
+     NO SITES
+  ========================================================= */
 
-  if (sites.length === 0) {
+  if (!sites.length) {
     return (
       <div
         style={{
-          width: "100%",
-          padding: "30px",
-          boxSizing: "border-box",
+          width:
+            "100%",
+
+          padding:
+            30,
+
+          boxSizing:
+            "border-box",
         }}
       >
         <div
           style={{
-            maxWidth: "650px",
-            margin: "0 auto",
-            background: "#ffffff",
-            border: "1px solid #e5e7eb",
-            borderRadius: "14px",
-            padding: "45px",
-            textAlign: "center",
+            maxWidth:
+              650,
+
+            margin:
+              "0 auto",
+
+            background:
+              "#fff",
+
+            border:
+              "1px solid #e5e7eb",
+
+            borderRadius:
+              14,
+
+            padding:
+              45,
+
+            textAlign:
+              "center",
           }}
         >
           <div
             style={{
-              fontSize: "40px",
-              marginBottom: "10px",
+              fontSize:
+                40,
+
+              marginBottom:
+                10,
             }}
           >
             ▤
@@ -3828,7 +4965,8 @@ function QRTracking() {
 
           <h2
             style={{
-              margin: "0 0 7px",
+              margin:
+                "0 0 7px",
             }}
           >
             No sites available
@@ -3836,12 +4974,15 @@ function QRTracking() {
 
           <p
             style={{
-              margin: "0",
-              color: "#6b7280",
+              margin: 0,
+
+              color:
+                "#6b7280",
             }}
           >
-            Import a cutlist first to
-            create a site and generate
+            Import a cutlist
+            first to create a
+            site and generate
             QR panels.
           </p>
         </div>
@@ -3849,276 +4990,73 @@ function QRTracking() {
     );
   }
 
-  // =========================================================
-  // MAIN UI
-  // =========================================================
+  /* =========================================================
+     MAIN SCREEN
+  ========================================================= */
 
   return (
     <div
       style={{
-        width: "100%",
-        height: "calc(100vh - 90px)",
-        minHeight: "620px",
-        boxSizing: "border-box",
-        overflow: "hidden",
-        padding: "10px",
-        background: "#f8fafc",
-        position: "relative",
+        width:
+          "100%",
+
+        height:
+          "calc(100vh - 90px)",
+
+        minHeight:
+          620,
+
+        boxSizing:
+          "border-box",
+
+        overflow:
+          "hidden",
+
+        padding: 10,
+
+        background:
+          "#f8fafc",
+
+        position:
+          "relative",
       }}
     >
-      {/* PACKET QR LABEL PREVIEW */}
-      {packetPrintData && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 9999,
-            background: "rgba(15, 23, 42, 0.45)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "20px",
-          }}
-        >
-          <div
-            style={{
-              width: "min(390px, 100%)",
-              maxHeight: "90vh",
-              overflowY: "auto",
-              background: "#ffffff",
-              borderRadius: "14px",
-              border: "1px solid #e5e7eb",
-              padding: "20px",
-              boxSizing: "border-box",
-              textAlign: "center",
-              boxShadow: "0 20px 50px rgba(0,0,0,0.20)",
-            }}
-          >
-            <div
-              style={{
-                fontSize: "10px",
-                fontWeight: "800",
-                letterSpacing: "0.08em",
-                color: "#2563eb",
-              }}
-            >
-              TRACKERZ
-            </div>
-
-            <h3
-              style={{
-                margin: "5px 0 2px",
-                fontSize: "20px",
-              }}
-            >
-              Packet QR Label
-            </h3>
-
-            <div
-              style={{
-                fontSize: "12px",
-                color: "#6b7280",
-                marginBottom: "12px",
-              }}
-            >
-              Print this QR and place it on the physical packet.
-            </div>
-
-            <div
-              style={{
-                border: "1px solid #e5e7eb",
-                borderRadius: "12px",
-                padding: "12px",
-                background: "#ffffff",
-              }}
-            >
-              <img
-                src={getPacketQRImageUrl(
-                  getPacketQRValue(packetPrintData.packet)
-                )}
-                alt="Packet QR code"
-                style={{
-                  width: "170px",
-                  height: "170px",
-                  maxWidth: "100%",
-                  objectFit: "contain",
-                  display: "block",
-                  margin: "0 auto 8px",
-                }}
-              />
-
-              <strong
-                style={{
-                  display: "block",
-                  fontSize: "15px",
-                  wordBreak: "break-word",
-                }}
-              >
-                {getPacketQRValue(
-                  packetPrintData.packet
-                )}
-              </strong>
-
-              <div
-                style={{
-                  marginTop: "4px",
-                  fontSize: "11px",
-                  fontWeight: "700",
-                }}
-              >
-                {getSiteName(
-                  packetPrintData.site
-                )}
-              </div>
-
-              <div
-                style={{
-                  marginTop: "2px",
-                  fontSize: "10px",
-                  color: "#6b7280",
-                }}
-              >
-                {getClientName(
-                  packetPrintData.site
-                )}
-                {" • "}
-                {packetPrintData.panelCount} panel
-                {packetPrintData.panelCount === 1 ? "" : "s"}
-              </div>
-
-              <div
-                style={{
-                  marginTop: "10px",
-                  borderTop: "1px solid #e5e7eb",
-                  paddingTop: "8px",
-                  textAlign: "left",
-                }}
-              >
-                <strong
-                  style={{
-                    fontSize: "11px",
-                  }}
-                >
-                  Panels to be printed
-                </strong>
-
-                <div
-                  style={{
-                    marginTop: "5px",
-                    maxHeight: "150px",
-                    overflowY: "auto",
-                  }}
-                >
-                  {getPacketPanels(
-                    packetPrintData.packet
-                  ).map((panel, index) => (
-                    <div
-                      key={panel.id || index}
-                      style={{
-                        padding: "5px 0",
-                        borderBottom: "1px solid #f1f5f9",
-                        fontSize: "9px",
-                      }}
-                    >
-                      <strong>
-                        {getPanelNameForPrint(panel)}
-                      </strong>
-                      <span style={{ color: "#6b7280" }}>
-                        {" • "}
-                        {getPanelSectionForPrint(panel)}
-                        {" • "}
-                        {getPanelLabelNumberForPrint(panel)}
-                        {" • T "}
-                        {getPanelThicknessForPrint(panel)}
-                        {" / L "}
-                        {getPanelLengthForPrint(panel)}
-                        {" / W "}
-                        {getPanelWidthForPrint(panel)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <div
-              style={{
-                display: "flex",
-                gap: "8px",
-                marginTop: "13px",
-              }}
-            >
-              <button
-                onClick={() =>
-                  printPacketLabel(
-                    packetPrintData.packet,
-                    packetPrintData.site
-                  )
-                }
-                style={{
-                  flex: 1,
-                  height: "42px",
-                  border: "none",
-                  borderRadius: "8px",
-                  background: "#2563eb",
-                  color: "#ffffff",
-                  fontWeight: "800",
-                  cursor: "pointer",
-                }}
-              >
-                🖨 Print Label
-              </button>
-
-              <button
-                onClick={() =>
-                  setPacketPrintData(null)
-                }
-                style={{
-                  height: "42px",
-                  padding: "0 14px",
-                  border: "1px solid #d1d5db",
-                  borderRadius: "8px",
-                  background: "#ffffff",
-                  color: "#374151",
-                  fontWeight: "800",
-                  cursor: "pointer",
-                }}
-              >
-                Close
-              </button>
-            </div>
-
-            <div
-              style={{
-                marginTop: "9px",
-                fontSize: "10px",
-                color: "#6b7280",
-              }}
-            >
-              The physical print format is 100 × 100 mm. The label contains the packet QR and panel details.
-            </div>
-          </div>
-        </div>
-      )}
       {/* HEADER */}
 
       <div
         style={{
-          height: "50px",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: "15px",
-          marginBottom: "10px",
+          height:
+            45,
+
+          display:
+            "flex",
+
+          alignItems:
+            "center",
+
+          justifyContent:
+            "space-between",
+
+          gap: 12,
+
+          marginBottom:
+            8,
         }}
       >
         <div>
           <div
             style={{
-              fontSize: "10px",
-              fontWeight: "800",
-              color: "#2563eb",
-              letterSpacing: "0.08em",
+              fontSize:
+                9,
+
+              fontWeight:
+                800,
+
+              color:
+                "#2563eb",
+
+              letterSpacing:
+                "0.08em",
             }}
           >
             TRACKERZ
@@ -4126,20 +5064,24 @@ function QRTracking() {
 
           <h2
             style={{
-              margin: "1px 0 0",
-              fontSize: "21px",
-              lineHeight: "1",
+              margin:
+                "1px 0 0",
+
+              fontSize:
+                20,
+
+              lineHeight:
+                1,
             }}
           >
             QR Tracking
           </h2>
         </div>
 
-        {/* SITE SELECTOR */}
-
         <div
           style={{
-            width: "310px",
+            width:
+              310,
           }}
         >
           <select
@@ -4150,19 +5092,30 @@ function QRTracking() {
               handleSiteChange
             }
             style={{
-              width: "100%",
-              height: "40px",
-              padding: "0 12px",
+              width:
+                "100%",
+
+              height:
+                38,
+
+              padding:
+                "0 11px",
+
               border:
                 "1px solid #d1d5db",
+
               borderRadius:
-                "8px",
+                8,
+
               background:
-                "#ffffff",
+                "#fff",
+
               fontWeight:
-                "700",
+                700,
+
               cursor:
                 "pointer",
+
               outline:
                 "none",
             }}
@@ -4170,8 +5123,12 @@ function QRTracking() {
             {sites.map(
               (site) => (
                 <option
-                  key={site.id}
-                  value={site.id}
+                  key={
+                    site.id
+                  }
+                  value={
+                    site.id
+                  }
                 >
                   {getSiteName(
                     site
@@ -4182,7 +5139,8 @@ function QRTracking() {
                   ) &&
                   getClientName(
                     site
-                  ) !== "Client"
+                  ) !==
+                    "Client"
                     ? ` — ${getClientName(
                         site
                       )}`
@@ -4198,41 +5156,52 @@ function QRTracking() {
         <div
           style={{
             height:
-              "calc(100% - 60px)",
+              "calc(100% - 53px)",
+
             display:
               "flex",
+
             flexDirection:
               "column",
+
             minHeight:
-              "0",
+              0,
           }}
         >
-          {/* TOP STATUS */}
+          {/* =================================================
+              TOP STAT CARDS
+          ================================================= */}
 
           <div
             style={{
               display:
-                "flex",
-              gap:
-                "8px",
+                "grid",
+
+              gridTemplateColumns:
+                "repeat(4, minmax(0, 1fr))",
+
+              gap: 7,
+
               height:
-                "65px",
+                61,
+
               flexShrink:
-                "0",
+                0,
+
               marginBottom:
-                "10px",
+                7,
             }}
           >
-            {/* REMAINING */}
-
             <button
               onClick={() => {
                 setActiveView(
                   "remaining"
                 );
+
                 setSelectedPacketId(
                   null
                 );
+
                 setSelectedPanelId(
                   null
                 );
@@ -4247,43 +5216,48 @@ function QRTracking() {
                 style={{
                   display:
                     "block",
+
                   color:
                     "#6b7280",
+
                   fontWeight:
-                    "700",
+                    700,
+
                   fontSize:
-                    "10px",
+                    8,
                 }}
               >
-                REMAINING
+                TOTAL PANELS
               </small>
 
               <strong
                 style={{
                   display:
                     "block",
+
                   fontSize:
-                    "21px",
+                    19,
+
                   marginTop:
-                    "2px",
+                    2,
                 }}
               >
                 {
-                  remainingCount
+                  totalPanels
                 }
               </strong>
             </button>
-
-            {/* PACKED */}
 
             <button
               onClick={() => {
                 setActiveView(
                   "packed"
                 );
+
                 setSelectedPacketId(
                   null
                 );
+
                 setSelectedPanelId(
                   null
                 );
@@ -4298,25 +5272,30 @@ function QRTracking() {
                 style={{
                   display:
                     "block",
+
                   color:
                     "#6b7280",
+
                   fontWeight:
-                    "700",
+                    700,
+
                   fontSize:
-                    "10px",
+                    8,
                 }}
               >
-                PACKED
+                PACKED PANELS
               </small>
 
               <strong
                 style={{
                   display:
                     "block",
+
                   fontSize:
-                    "21px",
+                    19,
+
                   marginTop:
-                    "2px",
+                    2,
                 }}
               >
                 {
@@ -4325,13 +5304,12 @@ function QRTracking() {
               </strong>
             </button>
 
-            {/* PACKETS */}
-
             <button
               onClick={() => {
                 setActiveView(
                   "packets"
                 );
+
                 setSelectedPanelId(
                   null
                 );
@@ -4346,57 +5324,61 @@ function QRTracking() {
                 style={{
                   display:
                     "block",
+
                   color:
                     "#6b7280",
+
                   fontWeight:
-                    "700",
+                    700,
+
                   fontSize:
-                    "10px",
+                    8,
                 }}
               >
-                PACKETS
+                TOTAL PACKETS
               </small>
 
               <strong
                 style={{
                   display:
                     "block",
+
                   fontSize:
-                    "21px",
+                    19,
+
                   marginTop:
-                    "2px",
+                    2,
                 }}
               >
                 {
-                  closedPackets.length
+                  totalPackets
                 }
               </strong>
             </button>
 
-            {/* PROGRESS */}
-
             <div
               style={{
-                flex:
-                  "1 1 0",
-                minWidth:
-                  "0",
                 border:
                   "1px solid #e5e7eb",
+
                 background:
-                  "#ffffff",
+                  "#fff",
+
                 borderRadius:
-                  "10px",
+                  10,
+
                 padding:
-                  "9px 12px",
+                  "8px 10px",
               }}
             >
               <div
                 style={{
                   display:
                     "flex",
+
                   justifyContent:
                     "space-between",
+
                   alignItems:
                     "center",
                 }}
@@ -4405,198 +5387,405 @@ function QRTracking() {
                   style={{
                     color:
                       "#6b7280",
+
                     fontWeight:
-                      "700",
+                      700,
+
                     fontSize:
-                      "10px",
+                      8,
                   }}
                 >
-                  PROGRESS
+                  PACKING PROGRESS
                 </small>
 
                 <strong>
-                  {progress}%
+                  {
+                    progress
+                  }
+                  %
                 </strong>
               </div>
 
               <div
                 style={{
                   height:
-                    "6px",
+                    6,
+
                   background:
                     "#e5e7eb",
+
                   borderRadius:
-                    "10px",
+                    10,
+
                   overflow:
                     "hidden",
+
                   marginTop:
-                    "7px",
+                    6,
                 }}
               >
                 <div
                   style={{
                     width:
                       `${progress}%`,
+
                     height:
                       "100%",
+
                     background:
                       "#16a34a",
+
                     transition:
                       "width 0.2s ease",
                   }}
                 />
               </div>
+
+              <div
+                style={{
+                  marginTop:
+                    3,
+
+                  fontSize:
+                    8,
+
+                  color:
+                    "#6b7280",
+                }}
+              >
+                {
+                  packedCount
+                }{" "}
+                packed •{" "}
+                {
+                  remainingCount
+                }{" "}
+                remaining
+              </div>
             </div>
           </div>
 
-          {/* SCANNER BAR */}
+          {/* =================================================
+              SCANNER
+          ================================================= */}
 
           <div
             style={{
-              height:
-                "54px",
-              flexShrink:
-                "0",
               display:
                 "flex",
+
+              justifyContent:
+                "space-between",
+
               alignItems:
-                "center",
-              gap:
-                "8px",
+                "stretch",
+
+              gap: 8,
+
               marginBottom:
-                "10px",
+                7,
+
+              flexShrink:
+                0,
             }}
           >
             <div
               style={{
-                flex:
-                  "1",
-                display:
-                  "flex",
-                gap:
-                  "7px",
+                width:
+                  350,
+
+                maxWidth:
+                  "45%",
+
                 minWidth:
-                  "0",
+                  290,
+
+                border:
+                  "1px solid #bfdbfe",
+
+                background:
+                  "#fff",
+
+                borderRadius:
+                  8,
+
+                padding:
+                  "6px 7px",
+
+                boxSizing:
+                  "border-box",
               }}
             >
-              <input
-                ref={inputRef}
-                autoFocus
-                value={
-                  manualQR
-                }
-                onChange={(
-                  event
-                ) =>
-                  setManualQR(
-                    event.target.value
-                  )
-                }
-                onKeyDown={
-                  handleQRKeyDown
-                }
-                placeholder="Scan QR code here..."
-                style={{
-                  flex:
-                    "1",
-                  minWidth:
-                    "0",
-                  height:
-                    "42px",
-                  boxSizing:
-                    "border-box",
-                  padding:
-                    "0 13px",
-                  border:
-                    "1px solid #2563eb",
-                  borderRadius:
-                    "8px",
-                  background:
-                    "#ffffff",
-                  outline:
-                    "none",
-                  fontSize:
-                    "14px",
-                }}
-              />
-
-              <button
-                disabled={
-                  actionLoading
-                }
-                onClick={
-                  handleScanPanel
-                }
-                style={{
-                  height:
-                    "42px",
-                  padding:
-                    "0 20px",
-                  border:
-                    "none",
-                  borderRadius:
-                    "8px",
-                  background:
-                    actionLoading
-                      ? "#9ca3af"
-                      : "#2563eb",
-                  color:
-                    "#ffffff",
-                  fontWeight:
-                    "800",
-                  cursor:
-                    actionLoading
-                      ? "not-allowed"
-                      : "pointer",
-                }}
-              >
-                {actionLoading
-                  ? "Saving..."
-                  : "Scan"}
-              </button>
-            </div>
-
-            {/* CURRENT PACKET */}
-
-            {openPacket ? (
               <div
                 style={{
                   display:
                     "flex",
+
                   alignItems:
                     "center",
-                  gap:
-                    "6px",
-                  flexShrink:
-                    "0",
+
+                  gap: 6,
+
+                  marginBottom:
+                    4,
                 }}
               >
                 <span
                   style={{
-                    height:
-                      "40px",
-                    display:
-                      "flex",
-                    alignItems:
-                      "center",
-                    padding:
-                      "0 10px",
+                    width: 6,
+
+                    height: 6,
+
                     borderRadius:
-                      "8px",
+                      "50%",
+
                     background:
-                      "#fff7ed",
-                    color:
-                      "#c2410c",
-                    fontWeight:
-                      "800",
+                      "#2563eb",
+
+                    flexShrink:
+                      0,
+                  }}
+                />
+
+                <strong
+                  style={{
                     fontSize:
-                      "12px",
+                      10,
                   }}
                 >
-                  🟠{" "}
-                  {
-                    openPacket.id
+                  Scan Panel QR
+                </strong>
+
+                <span
+                  style={{
+                    marginLeft:
+                      "auto",
+
+                    fontSize:
+                      8,
+
+                    color:
+                      "#6b7280",
+                  }}
+                >
+                  Factory Scanner
+                </span>
+              </div>
+
+              <div
+                style={{
+                  display:
+                    "flex",
+
+                  gap: 5,
+                }}
+              >
+                <input
+                  ref={
+                    inputRef
                   }
+                  autoFocus
+                  value={
+                    manualQR
+                  }
+                  onChange={(
+                    event
+                  ) =>
+                    setManualQR(
+                      event.target
+                        .value
+                    )
+                  }
+                  onKeyDown={
+                    handleQRKeyDown
+                  }
+                  placeholder="Scan QR..."
+                  style={{
+                    flex: 1,
+
+                    minWidth:
+                      0,
+
+                    height:
+                      32,
+
+                    boxSizing:
+                      "border-box",
+
+                    padding:
+                      "0 8px",
+
+                    border:
+                      "1px solid #2563eb",
+
+                    borderRadius:
+                      6,
+
+                    background:
+                      "#fff",
+
+                    outline:
+                      "none",
+
+                    fontSize:
+                      11,
+                  }}
+                />
+
+                <button
+                  disabled={
+                    actionLoading
+                  }
+                  onClick={
+                    handleScanPanel
+                  }
+                  style={{
+                    height:
+                      32,
+
+                    padding:
+                      "0 12px",
+
+                    border: 0,
+
+                    borderRadius:
+                      6,
+
+                    background:
+                      actionLoading
+                        ? "#9ca3af"
+                        : "#2563eb",
+
+                    color:
+                      "#fff",
+
+                    fontWeight:
+                      800,
+
+                    cursor:
+                      actionLoading
+                        ? "not-allowed"
+                        : "pointer",
+
+                    fontSize:
+                      10,
+                  }}
+                >
+                  {actionLoading
+                    ? "..."
+                    : "SCAN"}
+                </button>
+              </div>
+            </div>
+
+            {/* CURRENT OPEN PACKET */}
+
+            {openPacket && (
+              <div
+                style={{
+                  flex: 1,
+
+                  minWidth:
+                    0,
+
+                  border:
+                    "1px solid #fed7aa",
+
+                  background:
+                    "#fff7ed",
+
+                  borderRadius:
+                    8,
+
+                  padding:
+                    "6px 8px",
+
+                  display:
+                    "flex",
+
+                  alignItems:
+                    "center",
+
+                  gap: 7,
+                }}
+              >
+                <div
+                  style={{
+                    flex: 1,
+
+                    minWidth:
+                      0,
+                  }}
+                >
+                  <small
+                    style={{
+                      display:
+                        "block",
+
+                      color:
+                        "#c2410c",
+
+                      fontWeight:
+                        700,
+
+                      fontSize:
+                        8,
+                    }}
+                  >
+                    CURRENT OPEN
+                    PACKET
+                  </small>
+
+                  <strong
+                    style={{
+                      display:
+                        "block",
+
+                      marginTop:
+                        2,
+
+                      fontSize:
+                        12,
+
+                      overflow:
+                        "hidden",
+
+                      textOverflow:
+                        "ellipsis",
+
+                      whiteSpace:
+                        "nowrap",
+                    }}
+                  >
+                    📦{" "}
+                    {
+                      openPacket.id
+                    }
+                  </strong>
+                </div>
+
+                <span
+                  style={{
+                    fontSize:
+                      9,
+
+                    color:
+                      "#c2410c",
+
+                    fontWeight:
+                      700,
+
+                    whiteSpace:
+                      "nowrap",
+                  }}
+                >
+                  {
+                    openPacket
+                      .panelIds
+                      ?.length ||
+                    0
+                  }{" "}
+                  panels
                 </span>
 
                 <button
@@ -4608,26 +5797,37 @@ function QRTracking() {
                   }
                   style={{
                     height:
-                      "40px",
+                      32,
+
                     padding:
-                      "0 13px",
+                      "0 10px",
+
                     border:
                       "1px solid #16a34a",
+
                     borderRadius:
-                      "8px",
+                      6,
+
                     background:
                       "#f0fdf4",
+
                     color:
                       "#15803d",
+
                     fontWeight:
-                      "800",
+                      800,
+
                     cursor:
                       actionLoading
                         ? "not-allowed"
                         : "pointer",
+
+                    fontSize:
+                      9,
                   }}
                 >
-                  Close Packet
+                  ✓ CLOSE &
+                  PRINT
                 </button>
 
                 <button
@@ -4637,22 +5837,28 @@ function QRTracking() {
                   onClick={
                     handleDeleteOpenPacket
                   }
-                  title="Delete open packet"
                   style={{
                     width:
-                      "40px",
+                      30,
+
                     height:
-                      "40px",
+                      30,
+
                     border:
                       "1px solid #fecaca",
+
                     borderRadius:
-                      "8px",
+                      6,
+
                     background:
-                      "#ffffff",
+                      "#fff",
+
                     color:
                       "#dc2626",
+
                     fontWeight:
-                      "800",
+                      800,
+
                     cursor:
                       actionLoading
                         ? "not-allowed"
@@ -4662,96 +5868,122 @@ function QRTracking() {
                   ×
                 </button>
               </div>
-            ) : null}
+            )}
           </div>
 
-          {/* MESSAGE */}
+          {/* =================================================
+              MESSAGE
+          ================================================= */}
 
           {message && (
             <div
               style={{
                 minHeight:
-                  "34px",
+                  28,
+
                 flexShrink:
-                  "0",
+                  0,
+
                 boxSizing:
                   "border-box",
+
                 display:
                   "flex",
+
                 alignItems:
                   "center",
+
                 padding:
-                  "0 10px",
+                  "0 9px",
+
                 borderRadius:
-                  "7px",
+                  6,
+
                 marginBottom:
-                  "8px",
+                  6,
+
                 background:
                   messageType ===
                   "error"
                     ? "#fef2f2"
                     : "#f0fdf4",
+
                 border:
                   messageType ===
                   "error"
                     ? "1px solid #fecaca"
                     : "1px solid #bbf7d0",
+
                 color:
                   messageType ===
                   "error"
                     ? "#b91c1c"
                     : "#166534",
+
                 fontSize:
-                  "12px",
+                  10,
+
                 fontWeight:
-                  "700",
+                  700,
               }}
             >
-              {message}
+              {
+                message
+              }
             </div>
           )}
 
-          {/* MAIN WORKSPACE */}
+          {/* =================================================
+              MAIN WORKSPACE
+          ================================================= */}
 
           <div
             style={{
-              flex:
-                "1",
+              flex: 1,
+
               minHeight:
-                "0",
+                0,
+
               display:
                 "grid",
+
               gridTemplateColumns:
                 "minmax(0, 1fr)",
-              gap:
-                "10px",
+
+              gap: 7,
             }}
           >
-            {/* LEFT */}
-
             <div
               style={{
                 minWidth:
-                  "0",
+                  0,
+
                 minHeight:
-                  "0",
+                  0,
+
                 background:
-                  "#ffffff",
+                  "#fff",
+
                 border:
                   "1px solid #e5e7eb",
+
                 borderRadius:
-                  "12px",
+                  10,
+
                 padding:
-                  "13px",
+                  10,
+
                 boxSizing:
                   "border-box",
+
                 overflow:
                   "hidden",
               }}
             >
-              {renderWorkspace()}
+              {
+                renderWorkspace()
+              }
             </div>
-
           </div>
         </div>
       )}

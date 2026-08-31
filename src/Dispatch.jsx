@@ -6,26 +6,33 @@ import { supabase } from "./supabaseClient";
 TRACKERZ - DISPATCH
 =========================================================
 
-WORKFLOW:
+WORKFLOW
 
-Select Site
-    ↓
+LOGIN
+  ↓
+COMPANY
+  ↓
+SELECT ONE SITE
+  ↓
 READY FOR DISPATCH
-    ↓
-Scan Packet QR
-    ↓
-packets.status = "dispatched"
-dispatched_at = current time
-    ↓
-Packet automatically moves to DISPATCHED
+  ↓
+SCAN PACKET QR
+  ↓
+PACKET STATUS = DISPATCHED
+  ↓
+DISPATCHED
 
-IMPORTANT:
-- Does NOT modify QRTracking.jsx
-- Uses existing packets table
-- Uses existing packet_panels table
-- Uses existing panels table
-- Uses existing sites table
-- Supabase remains the source of truth
+IMPORTANT
+
+1. No "All Sites" option.
+2. No packets are shown until a site is selected.
+3. Only ONE site is active at a time.
+4. Only packets belonging to the selected site appear.
+5. The selected site must belong to the logged-in user's
+   company.
+6. Scanner rejects packets from another site.
+7. Supabase remains the source of truth.
+8. Existing packet/panel workflow is preserved.
 =========================================================
 */
 
@@ -40,33 +47,134 @@ function Dispatch() {
   const [panels, setPanels] = useState([]);
 
   /* ======================================================
-     UI STATE
+     COMPANY
   ====================================================== */
 
-  const [selectedSiteId, setSelectedSiteId] = useState("");
-  const [selectedPacketId, setSelectedPacketId] = useState(null);
+  const [companyId, setCompanyId] = useState(null);
+  const [companyName, setCompanyName] = useState("");
+
+  /* ======================================================
+     SITE
+  ====================================================== */
+
+  const [selectedSiteId, setSelectedSiteId] =
+    useState("");
+
+  /* ======================================================
+     PACKET
+  ====================================================== */
+
+  const [selectedPacketId, setSelectedPacketId] =
+    useState(null);
+
+  /* ======================================================
+     SCANNER
+  ====================================================== */
 
   const [scanValue, setScanValue] = useState("");
-
-  const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
-
-  const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
 
   const inputRef = useRef(null);
 
   /* ======================================================
-     LOAD SITES
+     UI
   ====================================================== */
 
-  async function loadSites() {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  /* ======================================================
+     CURRENT USER
+  ====================================================== */
+
+  async function getCurrentUser() {
+    const {
+      data,
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError) {
+      throw authError;
+    }
+
+    if (!data?.user) {
+      throw new Error(
+        "No authenticated user found. Please sign in again."
+      );
+    }
+
+    return data.user;
+  }
+
+  /* ======================================================
+     LOAD COMPANY
+  ====================================================== */
+
+  async function loadUserCompany() {
+    const user = await getCurrentUser();
+
+    const {
+      data: membership,
+      error: membershipError,
+    } = await supabase
+      .from("company_users")
+      .select(`
+        company_id,
+        companies (
+          id,
+          company_name
+        )
+      `)
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (membershipError) {
+      throw membershipError;
+    }
+
+    if (!membership?.company_id) {
+      throw new Error(
+        "Your user account is not assigned to a company."
+      );
+    }
+
+    const currentCompanyId =
+      membership.company_id;
+
+    const currentCompanyName =
+      membership.companies?.company_name ||
+      "";
+
+    setCompanyId(currentCompanyId);
+    setCompanyName(currentCompanyName);
+
+    return {
+      companyId: currentCompanyId,
+      companyName: currentCompanyName,
+    };
+  }
+
+  /* ======================================================
+     LOAD COMPANY SITES
+  ====================================================== */
+
+  async function loadSites(currentCompanyId) {
+    if (!currentCompanyId) {
+      setSites([]);
+      return [];
+    }
+
     const {
       data,
       error: sitesError,
     } = await supabase
       .from("sites")
       .select("*")
+      .eq(
+        "company_id",
+        currentCompanyId
+      )
       .order("id", {
         ascending: true,
       });
@@ -75,28 +183,59 @@ function Dispatch() {
       throw sitesError;
     }
 
-    setSites(
+    const siteList =
       Array.isArray(data)
         ? data
-        : []
-    );
+        : [];
 
-    return Array.isArray(data)
-      ? data
-      : [];
+    setSites(siteList);
+
+    return siteList;
   }
 
   /* ======================================================
-     LOAD PACKETS
+     LOAD COMPANY PACKETS
+     
+     We first obtain the company sites.
+     Then packets are loaded only for those sites.
+
+     This is intentionally NOT:
+
+       .from("packets").select("*")
+
+     without a company/site restriction.
   ====================================================== */
 
-  async function loadPackets() {
+  async function loadPackets(companySites) {
+    const siteIds =
+      Array.isArray(companySites)
+        ? companySites
+            .map(
+              (site) =>
+                site.id
+            )
+            .filter(
+              (id) =>
+                id !== null &&
+                id !== undefined
+            )
+        : [];
+
+    if (siteIds.length === 0) {
+      setPackets([]);
+      return [];
+    }
+
     const {
       data,
       error: packetsError,
     } = await supabase
       .from("packets")
       .select("*")
+      .in(
+        "site_id",
+        siteIds
+      )
       .order("id", {
         ascending: false,
       });
@@ -105,28 +244,52 @@ function Dispatch() {
       throw packetsError;
     }
 
-    setPackets(
+    const packetList =
       Array.isArray(data)
         ? data
-        : []
-    );
+        : [];
 
-    return Array.isArray(data)
-      ? data
-      : [];
+    setPackets(packetList);
+
+    return packetList;
   }
 
   /* ======================================================
      LOAD PACKET/PANEL RELATIONSHIPS
   ====================================================== */
 
-  async function loadPacketPanels() {
+  async function loadPacketPanels(
+    companyPackets
+  ) {
+    const packetIds =
+      Array.isArray(companyPackets)
+        ? companyPackets
+            .map(
+              (packet) =>
+                packet.id
+            )
+            .filter(
+              (id) =>
+                id !== null &&
+                id !== undefined
+            )
+        : [];
+
+    if (packetIds.length === 0) {
+      setPacketPanels([]);
+      return [];
+    }
+
     const {
       data,
       error: relationError,
     } = await supabase
       .from("packet_panels")
       .select("*")
+      .in(
+        "packet_id",
+        packetIds
+      )
       .order("id", {
         ascending: true,
       });
@@ -135,28 +298,56 @@ function Dispatch() {
       throw relationError;
     }
 
-    setPacketPanels(
+    const relationList =
       Array.isArray(data)
         ? data
-        : []
+        : [];
+
+    setPacketPanels(
+      relationList
     );
 
-    return Array.isArray(data)
-      ? data
-      : [];
+    return relationList;
   }
 
   /* ======================================================
      LOAD PANELS
   ====================================================== */
 
-  async function loadPanels() {
+  async function loadPanels(
+    companyPacketPanels
+  ) {
+    const panelIds =
+      Array.isArray(
+        companyPacketPanels
+      )
+        ? companyPacketPanels
+            .map(
+              (row) =>
+                row.panel_id
+            )
+            .filter(
+              (id) =>
+                id !== null &&
+                id !== undefined
+            )
+        : [];
+
+    if (panelIds.length === 0) {
+      setPanels([]);
+      return [];
+    }
+
     const {
       data,
       error: panelsError,
     } = await supabase
       .from("panels")
       .select("*")
+      .in(
+        "id",
+        panelIds
+      )
       .order("id", {
         ascending: true,
       });
@@ -165,19 +356,18 @@ function Dispatch() {
       throw panelsError;
     }
 
-    setPanels(
+    const panelList =
       Array.isArray(data)
         ? data
-        : []
-    );
+        : [];
 
-    return Array.isArray(data)
-      ? data
-      : [];
+    setPanels(panelList);
+
+    return panelList;
   }
 
   /* ======================================================
-     LOAD ALL DISPATCH DATA
+     FULL DATA LOAD
   ====================================================== */
 
   async function loadAllData() {
@@ -185,12 +375,69 @@ function Dispatch() {
       setLoading(true);
       setError("");
 
-      await Promise.all([
-        loadSites(),
-        loadPackets(),
-        loadPacketPanels(),
-        loadPanels(),
-      ]);
+      const {
+        companyId:
+          currentCompanyId,
+        companyName:
+          currentCompanyName,
+      } =
+        await loadUserCompany();
+
+      const companySites =
+        await loadSites(
+          currentCompanyId
+        );
+
+      const companyPackets =
+        await loadPackets(
+          companySites
+        );
+
+      const companyPacketPanels =
+        await loadPacketPanels(
+          companyPackets
+        );
+
+      await loadPanels(
+        companyPacketPanels
+      );
+
+      setCompanyId(
+        currentCompanyId
+      );
+
+      setCompanyName(
+        currentCompanyName || ""
+      );
+
+      /*
+      ------------------------------------------------------
+      IMPORTANT
+
+      Do NOT automatically select the first site.
+
+      The factory user must deliberately choose the site.
+      ------------------------------------------------------
+      */
+
+      setSelectedSiteId(
+        (currentSelectedSiteId) => {
+          if (
+            currentSelectedSiteId &&
+            companySites.some(
+              (site) =>
+                String(site.id) ===
+                String(
+                  currentSelectedSiteId
+                )
+            )
+          ) {
+            return currentSelectedSiteId;
+          }
+
+          return "";
+        }
+      );
     } catch (err) {
       console.error(
         "Dispatch data loading error:",
@@ -215,19 +462,7 @@ function Dispatch() {
   }, []);
 
   /* ======================================================
-     KEEP SCANNER READY
-  ====================================================== */
-
-  useEffect(() => {
-    if (!loading) {
-      setTimeout(() => {
-        inputRef.current?.focus();
-      }, 100);
-    }
-  }, [loading]);
-
-  /* ======================================================
-     REFRESH WHEN WINDOW BECOMES ACTIVE
+     REFRESH WHEN WINDOW RETURNS
   ====================================================== */
 
   useEffect(() => {
@@ -249,12 +484,41 @@ function Dispatch() {
   }, []);
 
   /* ======================================================
-     SITE FILTER
+     SELECTED SITE
+  ====================================================== */
+
+  const selectedSite = useMemo(() => {
+    if (!selectedSiteId) {
+      return null;
+    }
+
+    return (
+      sites.find(
+        (site) =>
+          String(site.id) ===
+          String(selectedSiteId)
+      ) || null
+    );
+  }, [
+    sites,
+    selectedSiteId,
+  ]);
+
+  /* ======================================================
+     FILTER PACKETS
+
+     THIS IS THE MAIN BEHAVIOR CHANGE.
+
+     No site selected:
+       return []
+
+     Site selected:
+       return ONLY that site's packets.
   ====================================================== */
 
   const filteredPackets = useMemo(() => {
     if (!selectedSiteId) {
-      return packets;
+      return [];
     }
 
     return packets.filter(
@@ -269,10 +533,6 @@ function Dispatch() {
 
   /* ======================================================
      READY FOR DISPATCH
-     
-     A packet is ready when:
-     - status is closed
-     - not dispatched
   ====================================================== */
 
   const readyPackets = useMemo(() => {
@@ -281,7 +541,9 @@ function Dispatch() {
         const status =
           String(
             packet.status || ""
-          ).toLowerCase();
+          )
+            .trim()
+            .toLowerCase();
 
         return (
           status === "closed" &&
@@ -289,7 +551,9 @@ function Dispatch() {
         );
       }
     );
-  }, [filteredPackets]);
+  }, [
+    filteredPackets,
+  ]);
 
   /* ======================================================
      DISPATCHED
@@ -301,7 +565,9 @@ function Dispatch() {
         const status =
           String(
             packet.status || ""
-          ).toLowerCase();
+          )
+            .trim()
+            .toLowerCase();
 
         return (
           status === "dispatched" ||
@@ -311,10 +577,12 @@ function Dispatch() {
         );
       }
     );
-  }, [filteredPackets]);
+  }, [
+    filteredPackets,
+  ]);
 
   /* ======================================================
-     GET PACKET PANEL COUNT
+     PACKET/PANEL HELPERS
   ====================================================== */
 
   function getPacketPanelRelations(
@@ -324,7 +592,8 @@ function Dispatch() {
       (relation) =>
         String(
           relation.packet_id
-        ) === String(packetId)
+        ) ===
+        String(packetId)
     );
   }
 
@@ -336,11 +605,9 @@ function Dispatch() {
     ).length;
   }
 
-  /* ======================================================
-     GET PACKET SITE
-  ====================================================== */
-
-  function getPacketSite(packet) {
+  function getPacketSite(
+    packet
+  ) {
     if (!packet) {
       return null;
     }
@@ -352,11 +619,9 @@ function Dispatch() {
     );
   }
 
-  /* ======================================================
-     GET PANEL BY ID
-  ====================================================== */
-
-  function getPanel(panelId) {
+  function getPanel(
+    panelId
+  ) {
     return panels.find(
       (panel) =>
         String(panel.id) ===
@@ -364,11 +629,23 @@ function Dispatch() {
     );
   }
 
-  /* ======================================================
-     GET PANEL QR
-  ====================================================== */
+  function getPacketQR(
+    packet
+  ) {
+    if (!packet) {
+      return "";
+    }
 
-  function getPanelQR(panel) {
+    return (
+      packet.packet_qr ||
+      packet.packet_code ||
+      ""
+    );
+  }
+
+  function getPanelQR(
+    panel
+  ) {
     if (!panel) {
       return "";
     }
@@ -382,26 +659,12 @@ function Dispatch() {
   }
 
   /* ======================================================
-     GET PACKET QR
-  ====================================================== */
-
-  function getPacketQR(packet) {
-    if (!packet) {
-      return "";
-    }
-
-    return (
-      packet.packet_qr ||
-      packet.packet_code ||
-      ""
-    );
-  }
-
-  /* ======================================================
      SELECT PACKET
   ====================================================== */
 
-  function selectPacket(packet) {
+  function selectPacket(
+    packet
+  ) {
     setSelectedPacketId(
       packet
         ? packet.id
@@ -413,25 +676,67 @@ function Dispatch() {
   }
 
   /* ======================================================
-     CURRENT SELECTED PACKET
+     SELECTED PACKET
   ====================================================== */
 
-  const selectedPacket = useMemo(() => {
-    if (!selectedPacketId) {
-      return null;
-    }
+  const selectedPacket =
+    useMemo(() => {
+      if (!selectedPacketId) {
+        return null;
+      }
 
-    return (
-      packets.find(
-        (packet) =>
-          String(packet.id) ===
-          String(selectedPacketId)
-      ) || null
+      return (
+        filteredPackets.find(
+          (packet) =>
+            String(
+              packet.id
+            ) ===
+            String(
+              selectedPacketId
+            )
+        ) || null
+      );
+    }, [
+      filteredPackets,
+      selectedPacketId,
+    ]);
+
+  /* ======================================================
+     SITE CHANGE
+
+     Changing the site immediately clears packet state.
+  ====================================================== */
+
+  function handleSiteChange(
+    event
+  ) {
+    const newSiteId =
+      event.target.value;
+
+    setSelectedSiteId(
+      newSiteId
     );
-  }, [
-    packets,
-    selectedPacketId,
-  ]);
+
+    setSelectedPacketId(
+      null
+    );
+
+    setScanValue("");
+
+    setError("");
+    setMessage("");
+
+    /*
+    Scanner is only focused after a real site
+    has been selected.
+    */
+
+    if (newSiteId) {
+      setTimeout(() => {
+        inputRef.current?.focus();
+      }, 100);
+    }
+  }
 
   /* ======================================================
      SCAN PACKET QR
@@ -448,22 +753,42 @@ function Dispatch() {
     }
 
     const qr =
-      scanValue
-        .trim();
-
-    if (!qr || scanning) {
-      return;
-    }
+      scanValue.trim();
 
     setError("");
     setMessage("");
+
+    /*
+    ------------------------------------------------------
+    SITE MUST BE SELECTED FIRST
+    ------------------------------------------------------
+    */
+
+    if (!selectedSiteId) {
+      setError(
+        "Select a site before scanning a packet."
+      );
+
+      setScanValue("");
+
+      return;
+    }
+
+    if (!qr) {
+      return;
+    }
+
+    if (scanning) {
+      return;
+    }
+
     setScanning(true);
 
     try {
       /*
-      -----------------------------------------------------
-      FIND PACKET BY PACKET QR
-      -----------------------------------------------------
+      ------------------------------------------------------
+      FIND PACKET
+      ------------------------------------------------------
       */
 
       const {
@@ -489,39 +814,77 @@ function Dispatch() {
       }
 
       /*
-      -----------------------------------------------------
-      SITE CHECK
-      -----------------------------------------------------
+      ------------------------------------------------------
+      COMPANY CHECK
 
-      If a particular site is selected,
-      don't allow a packet from another site
-      to be dispatched here.
+      Packet must belong to one of the sites belonging
+      to the current company.
+      ------------------------------------------------------
       */
 
+      const packetBelongsToCompany =
+        sites.some(
+          (site) =>
+            String(
+              site.id
+            ) ===
+            String(
+              packet.site_id
+            )
+        );
+
       if (
-        selectedSiteId &&
-        String(
-          packet.site_id
-        ) !==
-          String(
-            selectedSiteId
-          )
+        !packetBelongsToCompany
       ) {
         throw new Error(
-          "This packet belongs to another site. Select the correct site before dispatching."
+          "This packet does not belong to your company."
         );
       }
 
       /*
-      -----------------------------------------------------
-      ALREADY DISPATCHED CHECK
-      -----------------------------------------------------
+      ------------------------------------------------------
+      SITE CHECK
+
+      THIS IS IMPORTANT.
+
+      Even if the packet exists, it must belong to the
+      ONE site currently selected on screen.
+      ------------------------------------------------------
+      */
+
+      if (
+        String(
+          packet.site_id
+        ) !==
+        String(
+          selectedSiteId
+        )
+      ) {
+        const packetSite =
+          getPacketSite(
+            packet
+          );
+
+        throw new Error(
+          `Wrong site. This packet belongs to ${
+            packetSite?.site_name ||
+            "another site"
+          }. Please select that site before dispatching.`
+        );
+      }
+
+      /*
+      ------------------------------------------------------
+      ALREADY DISPATCHED
+      ------------------------------------------------------
       */
 
       const currentStatus =
         String(
           packet.status || ""
-        ).toLowerCase();
+        )
+          .trim()
+          .toLowerCase();
 
       if (
         currentStatus ===
@@ -540,9 +903,9 @@ function Dispatch() {
       }
 
       /*
-      -----------------------------------------------------
+      ------------------------------------------------------
       ONLY CLOSED PACKETS CAN BE DISPATCHED
-      -----------------------------------------------------
+      ------------------------------------------------------
       */
 
       if (
@@ -557,13 +920,19 @@ function Dispatch() {
       }
 
       /*
-      -----------------------------------------------------
-      UPDATE PACKET
-      -----------------------------------------------------
+      ------------------------------------------------------
+      DISPATCH TIME
+      ------------------------------------------------------
       */
 
       const dispatchedAt =
         new Date().toISOString();
+
+      /*
+      ------------------------------------------------------
+      UPDATE SUPABASE
+      ------------------------------------------------------
+      */
 
       const {
         data: updatedPacket,
@@ -589,17 +958,21 @@ function Dispatch() {
       }
 
       /*
-      -----------------------------------------------------
-      UPDATE LOCAL DATA
-      -----------------------------------------------------
+      ------------------------------------------------------
+      UPDATE LOCAL STATE
+      ------------------------------------------------------
       */
 
       setPackets(
         (current) =>
           current.map(
             (item) =>
-              String(item.id) ===
-              String(packet.id)
+              String(
+                item.id
+              ) ===
+              String(
+                packet.id
+              )
                 ? updatedPacket
                 : item
           )
@@ -618,9 +991,9 @@ function Dispatch() {
       setScanValue("");
 
       /*
-      -----------------------------------------------------
-      KEEP SCANNER READY
-      -----------------------------------------------------
+      ------------------------------------------------------
+      RETURN SCANNER TO READY STATE
+      ------------------------------------------------------
       */
 
       setTimeout(() => {
@@ -642,7 +1015,7 @@ function Dispatch() {
   }
 
   /* ======================================================
-     FORMAT DATE
+     DATE FORMAT
   ====================================================== */
 
   function formatDate(
@@ -696,7 +1069,9 @@ function Dispatch() {
       String(
         selectedPacketId
       ) ===
-      String(packet.id);
+      String(
+        packet.id
+      );
 
     return (
       <button
@@ -900,14 +1275,14 @@ function Dispatch() {
               "13px",
           }}
         >
-          Reading packets from Supabase.
+          Reading your company dispatch data.
         </p>
       </div>
     );
   }
 
   /* ======================================================
-     SELECTED PACKET PANEL DETAILS
+     SELECTED PACKET DETAILS
   ====================================================== */
 
   const selectedRelations =
@@ -991,8 +1366,7 @@ function Dispatch() {
                 "13px",
             }}
           >
-            Scan the packet QR to record
-            dispatch automatically.
+            Select one site before viewing or dispatching packets.
           </p>
         </div>
 
@@ -1021,7 +1395,36 @@ function Dispatch() {
       </div>
 
       {/* ==================================================
-          SITE SELECTOR
+          COMPANY
+      ================================================== */}
+
+      {companyName && (
+        <div
+          style={{
+            background:
+              "#eff6ff",
+            border:
+              "1px solid #bfdbfe",
+            borderRadius:
+              "10px",
+            padding:
+              "10px 14px",
+            marginBottom:
+              "18px",
+            fontSize:
+              "13px",
+            color:
+              "#1e40af",
+            fontWeight:
+              "700",
+          }}
+        >
+          Company: {companyName}
+        </div>
+      )}
+
+      {/* ==================================================
+          SELECT SITE
       ================================================== */}
 
       <div
@@ -1059,21 +1462,9 @@ function Dispatch() {
           value={
             selectedSiteId
           }
-          onChange={(
-            event
-          ) => {
-            setSelectedSiteId(
-              event.target
-                .value
-            );
-
-            setSelectedPacketId(
-              null
-            );
-
-            setError("");
-            setMessage("");
-          }}
+          onChange={
+            handleSiteChange
+          }
           style={{
             width:
               "100%",
@@ -1091,8 +1482,10 @@ function Dispatch() {
               "14px",
           }}
         >
+          {/* NO ALL SITES OPTION */}
+
           <option value="">
-            All Sites
+            Select a site
           </option>
 
           {sites.map(
@@ -1114,10 +1507,44 @@ function Dispatch() {
             )
           )}
         </select>
+
+        {/* SELECTED SITE INFORMATION */}
+
+        {selectedSite ? (
+          <div
+            style={{
+              marginTop:
+                "10px",
+              fontSize:
+                "11px",
+              color:
+                "#2563eb",
+              fontWeight:
+                "600",
+            }}
+          >
+            Dispatching only:
+            {" "}
+            {selectedSite.site_name}
+          </div>
+        ) : (
+          <div
+            style={{
+              marginTop:
+                "10px",
+              fontSize:
+                "11px",
+              color:
+                "#6b7280",
+            }}
+          >
+            Select a site to view its packets.
+          </div>
+        )}
       </div>
 
       {/* ==================================================
-          MESSAGE
+          MESSAGES
       ================================================== */}
 
       {message && (
@@ -1171,7 +1598,9 @@ function Dispatch() {
       )}
 
       {/* ==================================================
-          PACKET QR SCANNER
+          SCANNER
+          
+          ONLY ACTIVE AFTER SITE SELECTION
       ================================================== */}
 
       <div
@@ -1229,8 +1658,16 @@ function Dispatch() {
                   .value
               )
             }
-            placeholder="Scan packet QR here..."
+            placeholder={
+              selectedSiteId
+                ? "Scan packet QR here..."
+                : "Select a site first..."
+            }
             autoComplete="off"
+            disabled={
+              !selectedSiteId ||
+              scanning
+            }
             style={{
               flex:
                 "1",
@@ -1238,7 +1675,7 @@ function Dispatch() {
                 "0",
               padding:
                 "13px",
-                border:
+              border:
                 "1px solid #2563eb",
               borderRadius:
                 "8px",
@@ -1246,12 +1683,17 @@ function Dispatch() {
                 "none",
               fontSize:
                 "14px",
+              background:
+                !selectedSiteId
+                  ? "#f3f4f6"
+                  : "#ffffff",
             }}
           />
 
           <button
             type="submit"
             disabled={
+              !selectedSiteId ||
               scanning
             }
             style={{
@@ -1262,6 +1704,7 @@ function Dispatch() {
               borderRadius:
                 "8px",
               background:
+                !selectedSiteId ||
                 scanning
                   ? "#93c5fd"
                   : "#2563eb",
@@ -1270,6 +1713,7 @@ function Dispatch() {
               fontWeight:
                 "700",
               cursor:
+                !selectedSiteId ||
                 scanning
                   ? "default"
                   : "pointer",
@@ -1291,31 +1735,24 @@ function Dispatch() {
               "#6b7280",
           }}
         >
-          Scan the packet QR. A closed packet
-          will automatically move to Dispatched.
+          {!selectedSiteId
+            ? "Select a site before scanning a packet."
+            : `Only ${selectedSite?.site_name || "the selected site"} packets can be dispatched.`}
         </div>
       </div>
 
       {/* ==================================================
           PACKET LISTS
+          
+          IMPORTANT:
+          When selectedSiteId is empty, this entire
+          section is NOT displayed.
+
+          Therefore the factory user sees ZERO packets
+          before choosing a site.
       ================================================== */}
 
-      <div
-        style={{
-          display:
-            "grid",
-          gridTemplateColumns:
-            "1fr 1fr",
-          gap:
-            "18px",
-          alignItems:
-            "start",
-        }}
-      >
-        {/* ================================================
-            READY FOR DISPATCH
-        ================================================= */}
-
+      {!selectedSiteId ? (
         <div
           style={{
             background:
@@ -1325,493 +1762,583 @@ function Dispatch() {
             borderRadius:
               "12px",
             padding:
-              "18px",
-            minHeight:
-              "300px",
+              "55px 20px",
+            textAlign:
+              "center",
+            color:
+              "#6b7280",
           }}
         >
           <div
             style={{
-              display:
-                "flex",
-              justifyContent:
-                "space-between",
-              alignItems:
-                "center",
+              fontSize:
+                "38px",
               marginBottom:
-                "14px",
+                "12px",
             }}
           >
-            <div>
-              <h2
-                style={{
-                  margin:
-                    "0",
-                  fontSize:
-                    "18px",
-                  color:
-                    "#111827",
-                }}
-              >
-                Ready for Dispatch
-              </h2>
-
-              <div
-                style={{
-                  marginTop:
-                    "4px",
-                  fontSize:
-                    "12px",
-                  color:
-                    "#6b7280",
-                }}
-              >
-                Closed packets waiting to leave
-                the factory
-              </div>
-            </div>
-
-            <div
-              style={{
-                fontSize:
-                  "22px",
-                fontWeight:
-                  "800",
-                color:
-                  "#2563eb",
-              }}
-            >
-              {
-                readyPackets.length
-              }
-            </div>
+            ▤
           </div>
 
-          {readyPackets.length ===
-          0 ? (
-            <div
-              style={{
-                padding:
-                  "35px 15px",
-                textAlign:
-                  "center",
-                color:
-                  "#9ca3af",
-                fontSize:
-                  "13px",
-                border:
-                  "1px dashed #d1d5db",
-                borderRadius:
-                  "9px",
-              }}
-            >
-              No packets ready for dispatch.
-            </div>
-          ) : (
-            <div
-              style={{
-                maxHeight:
-                  "500px",
-                overflowY:
-                  "auto",
-                paddingRight:
-                  "3px",
-              }}
-            >
-              {readyPackets.map(
-                (packet) => (
-                  <PacketCard
-                    key={
-                      packet.id
-                    }
-                    packet={
-                      packet
-                    }
-                  />
-                )
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* ================================================
-            DISPATCHED
-        ================================================= */}
-
-        <div
-          style={{
-            background:
-              "#ffffff",
-            border:
-              "1px solid #e5e7eb",
-            borderRadius:
-              "12px",
-            padding:
-              "18px",
-            minHeight:
-              "300px",
-          }}
-        >
-          <div
+          <h2
             style={{
-              display:
-                "flex",
-              justifyContent:
-                "space-between",
-              alignItems:
-                "center",
-              marginBottom:
-                "14px",
-            }}
-          >
-            <div>
-              <h2
-                style={{
-                  margin:
-                    "0",
-                  fontSize:
-                  "18px",
-                  color:
-                    "#111827",
-                }}
-              >
-                Dispatched
-              </h2>
-
-              <div
-                style={{
-                  marginTop:
-                    "4px",
-                  fontSize:
-                    "12px",
-                  color:
-                    "#6b7280",
-                }}
-              >
-                Packets already dispatched
-              </div>
-            </div>
-
-            <div
-              style={{
-                fontSize:
-                  "22px",
-                fontWeight:
-                  "800",
-                color:
-                  "#16a34a",
-              }}
-            >
-              {
-                dispatchedPackets.length
-              }
-            </div>
-          </div>
-
-          {dispatchedPackets.length ===
-          0 ? (
-            <div
-              style={{
-                padding:
-                  "35px 15px",
-                textAlign:
-                  "center",
-                color:
-                  "#9ca3af",
-                fontSize:
-                  "13px",
-                border:
-                  "1px dashed #d1d5db",
-                borderRadius:
-                  "9px",
-              }}
-            >
-              No packets dispatched yet.
-            </div>
-          ) : (
-            <div
-              style={{
-                maxHeight:
-                  "500px",
-                overflowY:
-                  "auto",
-                paddingRight:
-                  "3px",
-              }}
-            >
-              {dispatchedPackets.map(
-                (packet) => (
-                  <PacketCard
-                    key={
-                      packet.id
-                    }
-                    packet={
-                      packet
-                    }
-                    dispatched
-                  />
-                )
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* ==================================================
-          SELECTED PACKET DETAILS
-      ================================================== */}
-
-      {selectedPacket && (
-        <div
-          style={{
-            marginTop:
-              "18px",
-            background:
-              "#ffffff",
-            border:
-              "1px solid #e5e7eb",
-            borderRadius:
-              "12px",
-            padding:
-              "20px",
-          }}
-        >
-          <div
-            style={{
-              display:
-                "flex",
-              justifyContent:
-                "space-between",
-              alignItems:
-                "flex-start",
-              gap:
+              margin:
+                "0 0 8px",
+              color:
+                "#374151",
+              fontSize:
                 "20px",
-              marginBottom:
-                "15px",
             }}
           >
-            <div>
-              <div
-                style={{
-                  fontSize:
-                    "11px",
-                  fontWeight:
-                    "700",
-                  color:
-                    "#6b7280",
-                  marginBottom:
-                    "5px",
-                }}
-              >
-                PACKET DETAILS
-              </div>
+            Select a site
+          </h2>
 
-              <h2
-                style={{
-                  margin:
-                    "0",
-                  fontSize:
-                    "21px",
-                  color:
-                    "#111827",
-                }}
-              >
-                {getPacketQR(
-                  selectedPacket
-                )}
-              </h2>
+          <p
+            style={{
+              margin:
+                "0",
+              fontSize:
+                "13px",
+            }}
+          >
+            Ready for Dispatch and Dispatched packets
+            will appear after you select one site.
+          </p>
+        </div>
+      ) : (
+        <div
+          style={{
+            display:
+              "grid",
+            gridTemplateColumns:
+              "1fr 1fr",
+            gap:
+              "18px",
+            alignItems:
+              "start",
+          }}
+        >
+          {/* ==============================================
+              READY FOR DISPATCH
+          ============================================== */}
 
-              <div
-                style={{
-                  marginTop:
-                    "6px",
-                  fontSize:
-                    "13px",
-                  color:
-                    "#6b7280",
-                }}
-              >
-                {
-                  getPacketSite(
-                    selectedPacket
-                  )?.site_name ||
-                  selectedPacket.site_name ||
-                  "Unknown site"
-                }
-              </div>
-            </div>
-
+          <div
+            style={{
+              background:
+                "#ffffff",
+              border:
+                "1px solid #e5e7eb",
+              borderRadius:
+                "12px",
+              padding:
+                "18px",
+              minHeight:
+                "300px",
+            }}
+          >
             <div
               style={{
-                textAlign:
-                  "right",
+                display:
+                  "flex",
+                justifyContent:
+                  "space-between",
+                alignItems:
+                  "center",
+                marginBottom:
+                  "14px",
               }}
             >
-              <div
-                style={{
-                  fontWeight:
-                    "700",
-                  color:
-                    String(
-                      selectedPacket.status ||
-                        ""
-                    ).toLowerCase() ===
-                    "dispatched"
-                      ? "#16a34a"
-                      : "#2563eb",
-                }}
-              >
-                {String(
-                  selectedPacket.status ||
-                    ""
-                ).toUpperCase()}
-              </div>
+              <div>
+                <h2
+                  style={{
+                    margin:
+                      "0",
+                    fontSize:
+                      "18px",
+                    color:
+                      "#111827",
+                  }}
+                >
+                  Ready for Dispatch
+                </h2>
 
-              {selectedPacket.dispatched_at && (
                 <div
                   style={{
                     marginTop:
-                      "5px",
+                      "4px",
                     fontSize:
-                      "11px",
+                      "12px",
                     color:
                       "#6b7280",
                   }}
                 >
-                  {formatDate(
-                    selectedPacket.dispatched_at
-                  )}
+                  {selectedSite?.site_name}
                 </div>
-              )}
-            </div>
-          </div>
+              </div>
 
-          <div
-            style={{
-              borderTop:
-                "1px solid #e5e7eb",
-              paddingTop:
-                "15px",
-            }}
-          >
-            <div
-              style={{
-                fontWeight:
-                  "700",
-                marginBottom:
-                  "10px",
-                color:
-                  "#111827",
-              }}
-            >
-              Panels inside packet (
-              {
-                selectedRelations.length
-              }
-              )
+              <div
+                style={{
+                  fontSize:
+                    "22px",
+                  fontWeight:
+                    "800",
+                  color:
+                    "#2563eb",
+                }}
+              >
+                {
+                  readyPackets.length
+                }
+              </div>
             </div>
 
-            {selectedRelations.length ===
+            {readyPackets.length ===
             0 ? (
               <div
                 style={{
+                  padding:
+                    "35px 15px",
+                  textAlign:
+                    "center",
                   color:
                     "#9ca3af",
                   fontSize:
                     "13px",
+                  border:
+                    "1px dashed #d1d5db",
+                  borderRadius:
+                    "9px",
                 }}
               >
-                No panel relationships found.
+                No packets ready for dispatch
+                for this site.
               </div>
             ) : (
               <div
                 style={{
-                  display:
-                    "grid",
-                  gridTemplateColumns:
-                    "repeat(auto-fill, minmax(220px, 1fr))",
-                  gap:
-                    "8px",
+                  maxHeight:
+                    "500px",
+                  overflowY:
+                    "auto",
+                  paddingRight:
+                    "3px",
                 }}
               >
-                {selectedRelations.map(
-                  (
-                    relation,
-                    index
-                  ) => {
-                    const panel =
-                      getPanel(
-                        relation.panel_id
-                      );
+                {readyPackets.map(
+                  (packet) => (
+                    <PacketCard
+                      key={
+                        packet.id
+                      }
+                      packet={
+                        packet
+                      }
+                    />
+                  )
+                )}
+              </div>
+            )}
+          </div>
 
-                    const panelQR =
-                      relation.qr_data ||
-                      getPanelQR(
-                        panel
-                      ) ||
-                      `Panel ${index + 1}`;
+          {/* ==============================================
+              DISPATCHED
+          ============================================== */}
 
-                    return (
-                      <div
-                        key={
-                          relation.id ||
-                          `${selectedPacket.id}-${relation.panel_id}-${index}`
-                        }
-                        style={{
-                          border:
-                            "1px solid #e5e7eb",
-                          borderRadius:
-                            "8px",
-                          padding:
-                            "10px",
-                          background:
-                            "#f9fafb",
-                        }}
-                      >
-                        <div
-                          style={{
-                            fontWeight:
-                              "700",
-                            fontSize:
-                              "13px",
-                            color:
-                              "#111827",
-                          }}
-                        >
-                          {panelQR}
-                        </div>
+          <div
+            style={{
+              background:
+                "#ffffff",
+              border:
+                "1px solid #e5e7eb",
+              borderRadius:
+                "12px",
+              padding:
+                "18px",
+              minHeight:
+                "300px",
+            }}
+          >
+            <div
+              style={{
+                display:
+                  "flex",
+                justifyContent:
+                  "space-between",
+                alignItems:
+                  "center",
+                marginBottom:
+                  "14px",
+              }}
+            >
+              <div>
+                <h2
+                  style={{
+                    margin:
+                      "0",
+                    fontSize:
+                      "18px",
+                    color:
+                      "#111827",
+                  }}
+                >
+                  Dispatched
+                </h2>
 
-                        {panel && (
-                          <div
-                            style={{
-                              marginTop:
-                                "4px",
-                              fontSize:
-                                "11px",
-                              color:
-                                "#6b7280",
-                            }}
-                          >
-                            {panel.length ||
-                              "-"}{" "}
-                            ×{" "}
-                            {panel.width ||
-                              "-"}{" "}
-                            ×{" "}
-                            {panel.thickness ||
-                              "-"}{" "}
-                            mm
-                          </div>
-                        )}
-                      </div>
-                    );
-                  }
+                <div
+                  style={{
+                    marginTop:
+                      "4px",
+                    fontSize:
+                      "12px",
+                    color:
+                      "#6b7280",
+                  }}
+                >
+                  {selectedSite?.site_name}
+                </div>
+              </div>
+
+              <div
+                style={{
+                  fontSize:
+                    "22px",
+                  fontWeight:
+                    "800",
+                  color:
+                    "#16a34a",
+                }}
+              >
+                {
+                  dispatchedPackets.length
+                }
+              </div>
+            </div>
+
+            {dispatchedPackets.length ===
+            0 ? (
+              <div
+                style={{
+                  padding:
+                    "35px 15px",
+                  textAlign:
+                    "center",
+                  color:
+                    "#9ca3af",
+                  fontSize:
+                    "13px",
+                  border:
+                    "1px dashed #d1d5db",
+                  borderRadius:
+                    "9px",
+                }}
+              >
+                No dispatched packets
+                for this site.
+              </div>
+            ) : (
+              <div
+                style={{
+                  maxHeight:
+                    "500px",
+                  overflowY:
+                    "auto",
+                  paddingRight:
+                    "3px",
+                }}
+              >
+                {dispatchedPackets.map(
+                  (packet) => (
+                    <PacketCard
+                      key={
+                        packet.id
+                      }
+                      packet={
+                        packet
+                      }
+                      dispatched
+                    />
+                  )
                 )}
               </div>
             )}
           </div>
         </div>
       )}
+
+      {/* ==================================================
+          SELECTED PACKET DETAILS
+          
+          Only available after a packet from the selected
+          site has been clicked.
+      ================================================== */}
+
+      {selectedPacket &&
+        selectedSiteId && (
+          <div
+            style={{
+              marginTop:
+                "18px",
+              background:
+                "#ffffff",
+              border:
+                "1px solid #e5e7eb",
+              borderRadius:
+                "12px",
+              padding:
+                "20px",
+            }}
+          >
+            <div
+              style={{
+                display:
+                  "flex",
+                justifyContent:
+                  "space-between",
+                alignItems:
+                  "flex-start",
+                gap:
+                  "20px",
+                marginBottom:
+                  "15px",
+              }}
+            >
+              <div>
+                <div
+                  style={{
+                    fontSize:
+                      "11px",
+                    fontWeight:
+                      "700",
+                    color:
+                      "#6b7280",
+                    marginBottom:
+                      "5px",
+                  }}
+                >
+                  PACKET DETAILS
+                </div>
+
+                <h2
+                  style={{
+                    margin:
+                      "0",
+                    fontSize:
+                      "21px",
+                    color:
+                      "#111827",
+                  }}
+                >
+                  {getPacketQR(
+                    selectedPacket
+                  )}
+                </h2>
+
+                <div
+                  style={{
+                    marginTop:
+                      "6px",
+                    fontSize:
+                      "13px",
+                    color:
+                      "#6b7280",
+                  }}
+                >
+                  {
+                    selectedSite?.site_name
+                  }
+                </div>
+
+                {companyName && (
+                  <div
+                    style={{
+                      marginTop:
+                        "4px",
+                      fontSize:
+                        "11px",
+                      color:
+                        "#2563eb",
+                      fontWeight:
+                        "700",
+                    }}
+                  >
+                    {companyName}
+                  </div>
+                )}
+              </div>
+
+              <div
+                style={{
+                  textAlign:
+                    "right",
+                }}
+              >
+                <div
+                  style={{
+                    fontWeight:
+                      "700",
+                    color:
+                      String(
+                        selectedPacket.status ||
+                          ""
+                      ).toLowerCase() ===
+                      "dispatched"
+                        ? "#16a34a"
+                        : "#2563eb",
+                  }}
+                >
+                  {String(
+                    selectedPacket.status ||
+                      ""
+                  ).toUpperCase()}
+                </div>
+
+                {selectedPacket.dispatched_at && (
+                  <div
+                    style={{
+                      marginTop:
+                        "5px",
+                      fontSize:
+                        "11px",
+                      color:
+                        "#6b7280",
+                    }}
+                  >
+                    {formatDate(
+                      selectedPacket.dispatched_at
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div
+              style={{
+                borderTop:
+                  "1px solid #e5e7eb",
+                paddingTop:
+                  "15px",
+              }}
+            >
+              <div
+                style={{
+                  fontWeight:
+                    "700",
+                  marginBottom:
+                    "10px",
+                  color:
+                    "#111827",
+                }}
+              >
+                Panels inside packet (
+                {
+                  selectedRelations.length
+                }
+                )
+              </div>
+
+              {selectedRelations.length ===
+              0 ? (
+                <div
+                  style={{
+                    color:
+                      "#9ca3af",
+                    fontSize:
+                      "13px",
+                  }}
+                >
+                  No panel relationships found.
+                </div>
+              ) : (
+                <div
+                  style={{
+                    display:
+                      "grid",
+                    gridTemplateColumns:
+                      "repeat(auto-fill, minmax(220px, 1fr))",
+                    gap:
+                      "8px",
+                  }}
+                >
+                  {selectedRelations.map(
+                    (
+                      relation,
+                      index
+                    ) => {
+                      const panel =
+                        getPanel(
+                          relation.panel_id
+                        );
+
+                      const panelQR =
+                        relation.qr_data ||
+                        getPanelQR(
+                          panel
+                        ) ||
+                        `Panel ${
+                          index + 1
+                        }`;
+
+                      return (
+                        <div
+                          key={
+                            relation.id ||
+                            `${selectedPacket.id}-${relation.panel_id}-${index}`
+                          }
+                          style={{
+                            border:
+                              "1px solid #e5e7eb",
+                            borderRadius:
+                              "8px",
+                            padding:
+                              "10px",
+                            background:
+                              "#f9fafb",
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontWeight:
+                                "700",
+                              fontSize:
+                                "13px",
+                              color:
+                                "#111827",
+                            }}
+                          >
+                            {panelQR}
+                          </div>
+
+                          {panel && (
+                            <div
+                              style={{
+                                marginTop:
+                                  "4px",
+                                fontSize:
+                                  "11px",
+                                color:
+                                  "#6b7280",
+                              }}
+                            >
+                              {panel.length ||
+                                "-"}{" "}
+                              ×{" "}
+                              {panel.width ||
+                                "-"}{" "}
+                              ×{" "}
+                              {panel.thickness ||
+                                "-"}{" "}
+                              mm
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
     </div>
   );
 }

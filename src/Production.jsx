@@ -9,6 +9,12 @@ function Production() {
   const [sites, setSites] = useState([]);
   const [panels, setPanels] = useState([]);
 
+  // Packet master records and panel-to-packet relationships.
+  // These are read through the same authenticated Supabase client,
+  // so existing RLS/company separation remains in force.
+  const [packets, setPackets] = useState([]);
+  const [packetPanels, setPacketPanels] = useState([]);
+
   const [selectedSiteId, setSelectedSiteId] =
     useState("");
 
@@ -16,7 +22,15 @@ function Production() {
   const [error, setError] = useState("");
 
   // =========================================================
-  // LOAD SITES + PANELS FROM SUPABASE
+  // LOAD SITES + PANELS + PACKETS + PACKET/PANEL RELATIONS
+  // FROM SUPABASE
+  //
+  // IMPORTANT:
+  // - No database structure changes.
+  // - No service-role key.
+  // - Uses the existing authenticated Supabase client.
+  // - Existing RLS/company separation continues to control
+  //   which rows this user can read.
   // =========================================================
 
   const loadData = async () => {
@@ -70,19 +84,89 @@ function Production() {
       }
 
       // -----------------------------------------------------
-      // SAVE TO REACT STATE
+      // LOAD PACKETS
+      //
+      // Existing packet structure used by QR Tracking:
+      // id
+      // site_id
+      // site_name
+      // packet_code
+      // packet_qr (if present)
+      // status
+      // opened_at
+      // closed_at
       // -----------------------------------------------------
 
-      const safeSites = Array.isArray(
-        sitesData
-      )
+      const {
+        data: packetsData,
+        error: packetsError,
+      } = await supabase
+        .from("packets")
+        .select("*")
+        .order("id", {
+          ascending: true,
+        });
+
+      if (packetsError) {
+        console.error(
+          "Production - packets error:",
+          packetsError
+        );
+
+        throw packetsError;
+      }
+
+      // -----------------------------------------------------
+      // LOAD PACKET/PANEL RELATIONSHIPS
+      //
+      // Existing relationship:
+      // packet_panels.packet_id -> packets.id
+      // packet_panels.panel_id  -> panels.id
+      //
+      // QR Tracking creates these rows when a panel is added
+      // to a packet. We use the same relationship here rather
+      // than expecting a packet_number column on panels.
+      // -----------------------------------------------------
+
+      const {
+        data: packetPanelsData,
+        error: packetPanelsError,
+      } = await supabase
+        .from("packet_panels")
+        .select("*")
+        .order("id", {
+          ascending: true,
+        });
+
+      if (packetPanelsError) {
+        console.error(
+          "Production - packet_panels error:",
+          packetPanelsError
+        );
+
+        throw packetPanelsError;
+      }
+
+      // -----------------------------------------------------
+      // SAFE ARRAYS
+      // -----------------------------------------------------
+
+      const safeSites = Array.isArray(sitesData)
         ? sitesData
         : [];
 
-      const safePanels = Array.isArray(
-        panelsData
-      )
+      const safePanels = Array.isArray(panelsData)
         ? panelsData
+        : [];
+
+      const safePackets = Array.isArray(packetsData)
+        ? packetsData
+        : [];
+
+      const safePacketPanels = Array.isArray(
+        packetPanelsData
+      )
+        ? packetPanelsData
         : [];
 
       console.log(
@@ -95,8 +179,20 @@ function Production() {
         safePanels
       );
 
+      console.log(
+        "TRACKERZ PRODUCTION - SUPABASE PACKETS:",
+        safePackets
+      );
+
+      console.log(
+        "TRACKERZ PRODUCTION - SUPABASE PACKET/PANEL RELATIONS:",
+        safePacketPanels
+      );
+
       setSites(safeSites);
       setPanels(safePanels);
+      setPackets(safePackets);
+      setPacketPanels(safePacketPanels);
 
       // -----------------------------------------------------
       // KEEP CURRENT SITE IF IT STILL EXISTS
@@ -140,6 +236,8 @@ function Production() {
 
       setSites([]);
       setPanels([]);
+      setPackets([]);
+      setPacketPanels([]);
     } finally {
       setLoading(false);
     }
@@ -405,32 +503,109 @@ function Production() {
   }, [sitePanels]);
 
   // =========================================================
-  // GET PACKET NUMBER
+  // GET PACKET NUMBER / CODE FROM A PACKET RECORD
   // =========================================================
 
-  const getPacketNumber = (
-    panel
-  ) => {
+  const getPacketNumber = (packet) => {
+    if (!packet) {
+      return "Not Assigned";
+    }
+
     return (
-      panel?.packet_number ||
-      panel?.packetNumber ||
-      panel?.packet_no ||
-      panel?.packetNo ||
-      panel?.packet_id ||
-      panel?.packetId ||
-      panel?.packet ||
-      panel?.pack_no ||
-      panel?.packNo ||
-      panel?.box_number ||
-      panel?.boxNumber ||
-      panel?.box_no ||
-      panel?.boxNo ||
+      packet?.packet_code ||
+      packet?.packet_qr ||
+      packet?.packet_number ||
+      packet?.packetNumber ||
+      packet?.packet_no ||
+      packet?.packetNo ||
+      packet?.id ||
       "Not Assigned"
     );
   };
 
   // =========================================================
-  // GROUP PANELS BY PACKET
+  // GET PACKET RELATION FOR A PANEL
+  //
+  // IMPORTANT:
+  // Do NOT read packet_number from panels.
+  //
+  // The actual relationship is:
+  // panels.id
+  //   -> packet_panels.panel_id
+  //   -> packet_panels.packet_id
+  //   -> packets.id
+  // =========================================================
+
+  const getPacketForPanel = (panel) => {
+    if (!panel) {
+      return null;
+    }
+
+    const panelId = panel?.id;
+
+    if (
+      panelId === null ||
+      panelId === undefined
+    ) {
+      return null;
+    }
+
+    const relations = packetPanels.filter(
+      (relation) =>
+        String(relation?.panel_id) ===
+        String(panelId)
+    );
+
+    if (relations.length === 0) {
+      return null;
+    }
+
+    // In normal Trackerz operation there should be one
+    // relationship because removing a panel from a packet
+    // removes the packet_panels row. If duplicates ever exist,
+    // prefer the latest relationship row.
+    const relation =
+      [...relations].sort(
+        (a, b) =>
+          Number(b?.id || 0) -
+          Number(a?.id || 0)
+      )[0];
+
+    return (
+      packets.find(
+        (packet) =>
+          String(packet?.id) ===
+          String(relation?.packet_id)
+      ) || null
+    );
+  };
+
+  // =========================================================
+  // GET PACKET DISPLAY VALUE FOR A PANEL
+  // =========================================================
+
+  const getPanelPacketNumber = (panel) => {
+    const packet =
+      getPacketForPanel(panel);
+
+    if (packet) {
+      return getPacketNumber(packet);
+    }
+
+    // Keep compatibility with any legacy panel-level packet
+    // field, but ONLY as a fallback. The current source of
+    // truth is packet_panels -> packets.
+    return (
+      panel?.packet_number ||
+      panel?.packetNumber ||
+      panel?.packet_no ||
+      panel?.packetNo ||
+      "Not Assigned"
+    );
+  };
+
+  // =========================================================
+  // GROUP PACKED PANELS BY ACTUAL PACKET
   // =========================================================
 
   const packetGroups = useMemo(() => {
@@ -440,7 +615,7 @@ function Production() {
       (panel) => {
         const packet =
           String(
-            getPacketNumber(
+            getPanelPacketNumber(
               panel
             )
           );
@@ -471,13 +646,18 @@ function Production() {
       .map(
         ([
           packet,
-          packetPanels,
+          packetPanelsForReport,
         ]) => ({
           packet,
-          panels: packetPanels,
+          panels:
+            packetPanelsForReport,
         })
       );
-  }, [packedPanels]);
+  }, [
+    packedPanels,
+    packets,
+    packetPanels,
+  ]);
 
   // =========================================================
   // SAFE VALUE

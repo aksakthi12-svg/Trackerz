@@ -19,28 +19,44 @@ FACTORY TRACKING APPLICATION
 
 PRESERVED:
 - Supabase authentication
-- Supabase sites table
-- Supabase panels table
+- Logged-in company
+- Company separation
 - RLS-compatible queries
-- Dashboard data loading
+- sites table
+- panels table
+- packets table
+- packet_panels table
 - Cutlist Import
-- Site-name QR generation
+- QR generation
 - QR Tracking
 - Production
+- Dispatch
 - Reports
 - Sites
 - Existing navigation
-- Existing packet/scanner functionality through QRTracking.jsx
+- Existing packet/scanner functionality
 
-CUTLIST WORKFLOW:
-1. New Site
-2. Upload Cutlist
-3. Preview
-4. Release to Production
-5. Download QR Cutlist
+DASHBOARD:
+1. Progress Sites
+2. Packed Sites
+3. Dispatched Sites
+
+SITE STATUS:
+- Progress:
+    panels packed < total panels
+
+- Packed:
+    all panels packed
+    AND not all packets dispatched
+
+- Dispatched:
+    total packets > 0
+    AND all packets dispatched
 
 IMPORTANT:
-Supabase remains the source of truth.
+Dashboard packet information is READ ONLY.
+No packet / packet_panels database structure
+is changed by this file.
 =========================================================
 */
 
@@ -51,6 +67,12 @@ function App() {
 
   const [session, setSession] = useState(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
+
+  /* ======================================================
+     COMPANY
+  ====================================================== */
+
+  const [companyName, setCompanyName] = useState("");
 
   /* ======================================================
      NAVIGATION
@@ -71,6 +93,16 @@ function App() {
 
   const [sites, setSites] = useState([]);
   const [panels, setPanels] = useState([]);
+
+  /*
+   * READ ONLY packet data for dashboard reference.
+   *
+   * Existing packet creation / dispatch functionality
+   * remains inside QRTracking / Dispatch.
+   */
+  const [packets, setPackets] = useState([]);
+  const [packetPanels, setPacketPanels] = useState([]);
+
   const [loadingData, setLoadingData] = useState(false);
 
   /* ======================================================
@@ -161,7 +193,7 @@ function App() {
   }, []);
 
   /* ======================================================
-     LOAD SITES + PANELS
+     LOAD DATA AFTER LOGIN
   ====================================================== */
 
   useEffect(() => {
@@ -170,12 +202,89 @@ function App() {
     loadAllData();
   }, [session]);
 
+  /* ======================================================
+     LOAD LOGGED-IN USER COMPANY
+  ====================================================== */
+
+  useEffect(() => {
+    if (!session?.user?.id) {
+      setCompanyName("");
+      return;
+    }
+
+    loadCompanyName();
+  }, [session]);
+
+  async function loadCompanyName() {
+    try {
+      const userId = session?.user?.id;
+
+      if (!userId) {
+        setCompanyName("");
+        return;
+      }
+
+      /*
+       * Existing company membership logic.
+       * RLS continues to determine what the user can see.
+       */
+
+      const {
+        data: membership,
+        error: membershipError,
+      } = await supabase
+        .from("company_users")
+        .select("company_id")
+        .eq("user_id", userId)
+        .maybeSingle();
+
+      if (membershipError) {
+        throw membershipError;
+      }
+
+      if (!membership?.company_id) {
+        setCompanyName("");
+        return;
+      }
+
+      const {
+        data: company,
+        error: companyError,
+      } = await supabase
+        .from("companies")
+        .select("company_name")
+        .eq("id", membership.company_id)
+        .single();
+
+      if (companyError) {
+        throw companyError;
+      }
+
+      setCompanyName(
+        company?.company_name || ""
+      );
+    } catch (err) {
+      console.error(
+        "Unable to load company name:",
+        err
+      );
+
+      setCompanyName("");
+    }
+  }
+
+  /* ======================================================
+     LOAD SITES + PANELS + PACKETS
+  ====================================================== */
+
   async function loadAllData() {
     setLoadingData(true);
     setError("");
 
     try {
-      /* LOAD SITES */
+      /* --------------------------------------------------
+         SITES
+      -------------------------------------------------- */
 
       const {
         data: sitesData,
@@ -191,7 +300,9 @@ function App() {
         throw sitesError;
       }
 
-      /* LOAD PANELS */
+      /* --------------------------------------------------
+         PANELS
+      -------------------------------------------------- */
 
       const {
         data: panelsData,
@@ -210,7 +321,90 @@ function App() {
       setSites(sitesData || []);
       setPanels(panelsData || []);
 
-      /* KEEP SELECTED SITE UPDATED */
+      /* --------------------------------------------------
+         PACKETS
+         
+         READ ONLY.
+         
+         If the existing RLS allows the logged-in company
+         to read packets, dashboard will show packet data.
+
+         If not, the rest of Trackerz continues to work
+         and packet dashboard counts simply remain zero.
+      -------------------------------------------------- */
+
+      let packetsData = [];
+
+      try {
+        const {
+          data,
+          error: packetsError,
+        } = await supabase
+          .from("packets")
+          .select("*")
+          .order("created_at", {
+            ascending: false,
+          });
+
+        if (packetsError) {
+          console.warn(
+            "Unable to load packets for dashboard:",
+            packetsError
+          );
+        } else {
+          packetsData = data || [];
+        }
+      } catch (packetReadError) {
+        console.warn(
+          "Packet dashboard read skipped:",
+          packetReadError
+        );
+      }
+
+      setPackets(packetsData);
+
+      /* --------------------------------------------------
+         PACKET PANELS
+         
+         READ ONLY.
+
+         Used only as a fallback to determine which site
+         a packet belongs to when packets.site_id is not
+         available.
+      -------------------------------------------------- */
+
+      let packetPanelsData = [];
+
+      try {
+        const {
+          data,
+          error: packetPanelsError,
+        } = await supabase
+          .from("packet_panels")
+          .select("*");
+
+        if (packetPanelsError) {
+          console.warn(
+            "Unable to load packet_panels for dashboard:",
+            packetPanelsError
+          );
+        } else {
+          packetPanelsData = data || [];
+        }
+      } catch (packetPanelsReadError) {
+        console.warn(
+          "Packet-panels dashboard read skipped:",
+          packetPanelsReadError
+        );
+      }
+
+      setPacketPanels(
+        packetPanelsData
+      );
+
+      /* --------------------------------------------------
+         KEEP SELECTED SITE UPDATED
+      -------------------------------------------------- */
 
       if (selectedSite) {
         const updatedSelectedSite =
@@ -261,7 +455,10 @@ function App() {
       setSession(null);
       setSites([]);
       setPanels([]);
+      setPackets([]);
+      setPacketPanels([]);
       setSelectedSite(null);
+      setCompanyName("");
       setActivePage("dashboard");
     } catch (err) {
       console.error(
@@ -419,18 +616,259 @@ function App() {
     };
   }
 
-  function isSiteDelivered(site) {
+  /* ======================================================
+     PACKET HELPERS
+  ====================================================== */
+
+  /*
+   * Find packet ID from packet_panels.
+   *
+   * Different versions of Trackerz may use:
+   * packet_id
+   * packetId
+   * id of the packet relation
+   */
+  function getPacketIdFromRelation(
+    relation
+  ) {
+    if (!relation) {
+      return null;
+    }
+
+    return (
+      relation.packet_id ??
+      relation.packetId ??
+      relation.packetID ??
+      null
+    );
+  }
+
+  /*
+   * Find panel ID from packet_panels.
+   */
+  function getPanelIdFromRelation(
+    relation
+  ) {
+    if (!relation) {
+      return null;
+    }
+
+    return (
+      relation.panel_id ??
+      relation.panelId ??
+      relation.panelID ??
+      null
+    );
+  }
+
+  /*
+   * Determine which site a packet belongs to.
+
+   * Preferred:
+     packets.site_id
+
+   * Fallback:
+     packet_panels -> panel_id -> panels.site_id
+  */
+  function getPacketSiteId(packet) {
+    if (!packet) {
+      return null;
+    }
+
+    if (
+      packet.site_id !== undefined &&
+      packet.site_id !== null
+    ) {
+      return packet.site_id;
+    }
+
+    if (
+      packet.siteId !== undefined &&
+      packet.siteId !== null
+    ) {
+      return packet.siteId;
+    }
+
+    const packetId =
+      packet.id ??
+      packet.packet_id ??
+      packet.packetId;
+
+    if (
+      packetId === undefined ||
+      packetId === null
+    ) {
+      return null;
+    }
+
+    const relations =
+      packetPanels.filter(
+        (relation) =>
+          String(
+            getPacketIdFromRelation(
+              relation
+            )
+          ) ===
+          String(packetId)
+      );
+
+    for (const relation of relations) {
+      const panelId =
+        getPanelIdFromRelation(
+          relation
+        );
+
+      if (
+        panelId === undefined ||
+        panelId === null
+      ) {
+        continue;
+      }
+
+      const panel =
+        panels.find(
+          (item) =>
+            String(item.id) ===
+            String(panelId)
+        );
+
+      if (
+        panel?.site_id !==
+          undefined &&
+        panel?.site_id !== null
+      ) {
+        return panel.site_id;
+      }
+    }
+
+    return null;
+  }
+
+  /*
+   * Determine whether a packet is dispatched.
+
+   * Existing possible fields are handled without
+   * changing the database:
+   *
+   * status = Dispatched
+   * dispatched = true
+   * dispatched_at exists
+   * dispatch_timestamp exists
+   */
+  function isPacketDispatched(
+    packet
+  ) {
+    if (!packet) {
+      return false;
+    }
+
     const status =
       String(
-        site?.status || ""
+        packet.status || ""
       )
         .trim()
         .toLowerCase();
 
+    if (
+      status === "dispatched" ||
+      status === "dispatch"
+    ) {
+      return true;
+    }
+
+    if (
+      packet.dispatched === true ||
+      packet.is_dispatched === true
+    ) {
+      return true;
+    }
+
+    if (
+      packet.dispatched_at ||
+      packet.dispatchedAt ||
+      packet.dispatch_timestamp ||
+      packet.dispatch_time
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /*
+   * Get all packets belonging to a site.
+   */
+  function getSitePackets(site) {
+    if (!site) {
+      return [];
+    }
+
+    return packets.filter(
+      (packet) => {
+        const packetSiteId =
+          getPacketSiteId(
+            packet
+          );
+
+        return (
+          packetSiteId !==
+            null &&
+          String(
+            packetSiteId
+          ) ===
+            String(site.id)
+        );
+      }
+    );
+  }
+
+  /*
+   * Packet summary for dashboard.
+   */
+  function getSitePacketSummary(
+    site
+  ) {
+    const sitePackets =
+      getSitePackets(site);
+
+    const totalPackets =
+      sitePackets.length;
+
+    const dispatchedPackets =
+      sitePackets.filter(
+        isPacketDispatched
+      ).length;
+
+    return {
+      totalPackets,
+      dispatchedPackets,
+    };
+  }
+
+  /*
+   * A site is considered dispatched only when:
+
+   * 1. It has at least one packet
+   * 2. Every packet is dispatched
+   *
+   * This prevents a newly created site with zero packets
+   * from incorrectly appearing in Dispatched Sites.
+   */
+  function isSiteDispatched(
+    site
+  ) {
+    const {
+      totalPackets,
+      dispatchedPackets,
+    } =
+      getSitePacketSummary(
+        site
+      );
+
     return (
-      status === "delivered" ||
-      site?.delivered === true ||
-      site?.isDelivered === true
+      totalPackets > 0 &&
+      dispatchedPackets >=
+        totalPackets
     );
   }
 
@@ -438,43 +876,80 @@ function App() {
      DASHBOARD DATA
   ====================================================== */
 
-  const dashboardSiteData = useMemo(() => {
-    return sites.map((site) => {
-      const progress =
-        getSiteProgress(site);
+  const dashboardSiteData =
+    useMemo(() => {
+      return sites.map((site) => {
+        const progress =
+          getSiteProgress(site);
 
-      return {
-        ...site,
-        progress,
-        delivered:
-          isSiteDelivered(site),
-      };
-    });
-  }, [sites, panels]);
+        const packetSummary =
+          getSitePacketSummary(
+            site
+          );
 
-  const progressSites =
+        const dispatched =
+          isSiteDispatched(
+            site
+          );
+
+        return {
+          ...site,
+
+          progress,
+
+          totalPackets:
+            packetSummary.totalPackets,
+
+          dispatchedPackets:
+            packetSummary.dispatchedPackets,
+
+          dispatched,
+        };
+      });
+    }, [
+      sites,
+      panels,
+      packets,
+      packetPanels,
+    ]);
+
+  /*
+   * IMPORTANT ORDER:
+   *
+   * Dispatched first.
+   * Then Packed.
+   * Then Progress.
+   *
+   * A dispatched site must not remain in Packed Sites.
+   */
+
+  const dispatchedSites =
     dashboardSiteData.filter(
       (site) =>
-        !site.delivered &&
-        site.progress.percentage < 100
+        site.dispatched
     );
 
   const packedSites =
     dashboardSiteData.filter(
       (site) =>
-        !site.delivered &&
-        site.progress.percentage === 100
+        !site.dispatched &&
+        site.progress.percentage ===
+          100
     );
 
-  const dispatchedSites =
+  const progressSites =
     dashboardSiteData.filter(
-      (site) => site.delivered
+      (site) =>
+        !site.dispatched &&
+        site.progress.percentage <
+          100
     );
 
   const dashboardSites =
     dashboardTab === "packed"
       ? packedSites
-      : dashboardTab === "dispatched"
+      : dashboardTab ===
+          "dispatched"
         ? dispatchedSites
         : progressSites;
 
@@ -571,7 +1046,9 @@ function App() {
     address,
   }) {
     const cleanSiteName =
-      String(site_name || "").trim();
+      String(
+        site_name || ""
+      ).trim();
 
     if (!cleanSiteName) {
       throw new Error(
@@ -611,20 +1088,26 @@ function App() {
       .from("sites")
       .insert([
         {
-          site_name: cleanSiteName,
+          site_name:
+            cleanSiteName,
+
           client_name:
             String(
               client_name || ""
             ).trim(),
+
           contact:
             String(
               contact || ""
             ).trim(),
+
           address:
             String(
               address || ""
             ).trim(),
+
           panel_count: 0,
+
           status: "Active",
         },
       ])
@@ -649,7 +1132,9 @@ function App() {
      EXCEL FILE SELECT
   ====================================================== */
 
-  async function handleFileSelect(event) {
+  async function handleFileSelect(
+    event
+  ) {
     const file =
       event.target.files?.[0];
 
@@ -673,7 +1158,8 @@ function App() {
 
       if (
         !workbook.SheetNames ||
-        workbook.SheetNames.length === 0
+        workbook.SheetNames.length ===
+          0
       ) {
         throw new Error(
           "No worksheet found."
@@ -830,8 +1316,6 @@ function App() {
     setMessage("");
 
     try {
-      /* PREPARE PANEL ROWS */
-
       const rowsToInsert =
         importRows.map(
           (row, index) => {
@@ -907,7 +1391,7 @@ function App() {
               numberFromRow(row, [
                 "FB Length",
                 "Length",
-                "length_num",
+                "length",
                 "Len",
                 "L",
               ]);
@@ -916,7 +1400,7 @@ function App() {
               numberFromRow(row, [
                 "FB Width",
                 "Width",
-                "width_num",
+                "width",
                 "Wid",
                 "W",
               ]);
@@ -924,7 +1408,7 @@ function App() {
             const thickness =
               numberFromRow(row, [
                 "Thickness",
-                "thickness_num",
+                "thickness",
                 "Thk",
                 "T",
               ]);
@@ -941,8 +1425,6 @@ function App() {
               quantityValue === null
                 ? 1
                 : quantityValue;
-
-            /* QR DATA */
 
             const cleanSiteName =
               String(
@@ -974,13 +1456,13 @@ function App() {
               panel_name:
                 String(panelName),
 
-              length_num:
+              length:
                 length,
 
-              width_num:
+              width:
                 width,
 
-              thickness_num:
+              thickness:
                 thickness,
 
               quantity:
@@ -994,27 +1476,6 @@ function App() {
 
               qr_data:
                 String(qrData),
-
-              assembly_label:
-                assemblyLabel || null,
-
-              cabinet_name:
-                cabinetName || null,
-
-              section_name:
-                sectionName || null,
-
-              room_name:
-                roomName || null,
-
-              material:
-                material || null,
-
-              customer:
-                customer || null,
-
-              remark:
-                remark || null,
             };
           }
         );
@@ -1023,107 +1484,36 @@ function App() {
 
       const batchSize = 100;
 
-      /* FULL ROW INSERT */
+      /*
+       * Existing panels columns only.
+       *
+       * No length_num.
+       */
 
-      try {
-        for (
-          let i = 0;
-          i < rowsToInsert.length;
-          i += batchSize
-        ) {
-          const batch =
-            rowsToInsert.slice(
-              i,
-              i + batchSize
-            );
-
-          const {
-            error: insertError,
-          } = await supabase
-            .from("panels")
-            .insert(batch);
-
-          if (insertError) {
-            throw insertError;
-          }
-
-          insertedTotal +=
-            batch.length;
-        }
-      } catch (fullInsertError) {
-        /*
-        FALLBACK TO CORE PANELS STRUCTURE
-        */
-
-        console.warn(
-          "Optional panel columns were rejected. Retrying with core Panels structure.",
-          fullInsertError
-        );
-
-        insertedTotal = 0;
-
-        const coreRows =
-          rowsToInsert.map(
-            (panel) => ({
-              site_id:
-                panel.site_id,
-
-              site_name:
-                panel.site_name,
-
-              panel_name:
-                panel.panel_name,
-
-              length_num:
-                panel.length_num,
-
-              width_num:
-                panel.width_num,
-
-              thickness_num:
-                panel.thickness_num,
-
-              quantity:
-                panel.quantity,
-
-              status:
-                panel.status,
-
-              packed:
-                panel.packed,
-
-              qr_data:
-                panel.qr_data,
-            })
+      for (
+        let i = 0;
+        i < rowsToInsert.length;
+        i += batchSize
+      ) {
+        const batch =
+          rowsToInsert.slice(
+            i,
+            i + batchSize
           );
 
-        for (
-          let i = 0;
-          i < coreRows.length;
-          i += batchSize
-        ) {
-          const batch =
-            coreRows.slice(
-              i,
-              i + batchSize
-            );
+        const {
+          error: insertError,
+        } = await supabase
+          .from("panels")
+          .insert(batch);
 
-          const {
-            error: insertError,
-          } = await supabase
-            .from("panels")
-            .insert(batch);
-
-          if (insertError) {
-            throw insertError;
-          }
-
-          insertedTotal +=
-            batch.length;
+        if (insertError) {
+          throw insertError;
         }
-      }
 
-      /* UPDATE SITE PANEL COUNT */
+        insertedTotal +=
+          batch.length;
+      }
 
       const importedQuantity =
         rowsToInsert.reduce(
@@ -1164,8 +1554,6 @@ function App() {
         throw siteUpdateError;
       }
 
-      /* UPDATE LOCAL STATE */
-
       setSites((previous) =>
         previous.map((site) =>
           String(site.id) ===
@@ -1178,8 +1566,6 @@ function App() {
       setSelectedSite(
         updatedSite
       );
-
-      /* RESET ONLY WHEN NOT KEEPING PREVIEW */
 
       if (!keepPreview) {
         setImportRows([]);
@@ -1219,7 +1605,9 @@ function App() {
      PACK / UNPACK
   ====================================================== */
 
-  async function togglePacked(panel) {
+  async function togglePacked(
+    panel
+  ) {
     setError("");
     setMessage("");
 
@@ -1290,7 +1678,9 @@ function App() {
      DELETE SITE
   ====================================================== */
 
-  async function deleteSite(site) {
+  async function deleteSite(
+    site
+  ) {
     if (!site) {
       return;
     }
@@ -1487,6 +1877,20 @@ function App() {
             <span>
               Panel Production System
             </span>
+
+            {companyName && (
+              <div
+                style={{
+                  marginTop: "8px",
+                  fontSize: "12px",
+                  fontWeight: "700",
+                  color: "#2563eb",
+                  letterSpacing: "0.4px",
+                }}
+              >
+                {companyName}
+              </div>
+            )}
           </div>
 
         </div>
@@ -1674,11 +2078,14 @@ function App() {
   }
 
   /* ======================================================
-     DASHBOARD
+     DASHBOARD EMPTY STATE
   ====================================================== */
 
   function renderDashboardSiteProgress() {
-    if (dashboardSites.length === 0) {
+    if (
+      dashboardSites.length ===
+      0
+    ) {
       return (
         <div
           style={{
@@ -1696,7 +2103,10 @@ function App() {
             {dashboardTab ===
             "progress"
               ? "▤"
-              : "✓"}
+              : dashboardTab ===
+                  "packed"
+                ? "✓"
+                : "✓"}
           </div>
 
           <h3
@@ -1727,7 +2137,7 @@ function App() {
               : dashboardTab ===
                   "packed"
                 ? "No site is fully packed yet."
-                : "No site has been marked as dispatched yet."}
+                : "No site has all packets dispatched yet."}
           </p>
         </div>
       );
@@ -1743,7 +2153,7 @@ function App() {
         <table
           style={{
             width: "100%",
-            minWidth: "850px",
+            minWidth: "1100px",
             borderCollapse:
               "collapse",
             background:
@@ -1777,6 +2187,14 @@ function App() {
 
               <th className="dashboard-th center">
                 Balance
+              </th>
+
+              <th className="dashboard-th center">
+                Total Packets
+              </th>
+
+              <th className="dashboard-th center">
+                Dispatched Packets
               </th>
 
               <th className="dashboard-th center">
@@ -1881,6 +2299,41 @@ function App() {
                           "16px",
                         textAlign:
                           "center",
+                        fontWeight:
+                          "700",
+                        color:
+                          "#111827",
+                      }}
+                    >
+                      {site.totalPackets}
+                    </td>
+
+                    <td
+                      style={{
+                        padding:
+                          "16px",
+                        textAlign:
+                          "center",
+                        fontWeight:
+                          "700",
+                        color:
+                          site.dispatchedPackets >
+                          0
+                            ? "#16a34a"
+                            : "#6b7280",
+                      }}
+                    >
+                      {
+                        site.dispatchedPackets
+                      }
+                    </td>
+
+                    <td
+                      style={{
+                        padding:
+                          "16px",
+                        textAlign:
+                          "center",
                         minWidth:
                           "180px",
                       }}
@@ -1949,18 +2402,24 @@ function App() {
     );
   }
 
+  /* ======================================================
+     DASHBOARD
+  ====================================================== */
+
   function renderDashboard() {
     const tabs = [
       {
         key: "progress",
-        label: "Progress Sites",
+        label:
+          "Progress Sites",
         count:
           progressSites.length,
         icon: "▤",
       },
       {
         key: "packed",
-        label: "Packed Sites",
+        label:
+          "Packed Sites",
         count:
           packedSites.length,
         icon: "✓",
@@ -2117,6 +2576,13 @@ function App() {
 
   /* ======================================================
      SITES PAGE
+
+     READ-ONLY SITE LIST:
+     - Shows site information in one line/table row
+     - No Open Site action
+     - No panel tracking here
+     - No pack/unpack actions here
+     - Delete Site is the only action
   ====================================================== */
 
   function renderSitesPage() {
@@ -2135,17 +2601,14 @@ function App() {
             </h2>
 
             <p>
-              Manage factory projects
-              and site information.
+              View factory projects and site information.
             </p>
           </div>
 
           <button
             className="primary-button"
             onClick={() =>
-              setShowAddSite(
-                true
-              )
+              setShowAddSite(true)
             }
           >
             + New Site
@@ -2153,8 +2616,7 @@ function App() {
 
         </div>
 
-        {sites.length ===
-        0 ? (
+        {sites.length === 0 ? (
           <div className="empty-card">
 
             <div className="empty-icon">
@@ -2166,16 +2628,13 @@ function App() {
             </h3>
 
             <p>
-              Create your first factory
-              site to begin tracking.
+              Create your first factory site to begin tracking.
             </p>
 
             <button
               className="primary-button"
               onClick={() =>
-                setShowAddSite(
-                  true
-                )
+                setShowAddSite(true)
               }
             >
               + Create First Site
@@ -2183,25 +2642,176 @@ function App() {
 
           </div>
         ) : (
-          <div className="site-grid">
+          <div
+            className="panel"
+            style={{
+              padding: "0",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                width: "100%",
+                overflowX: "auto",
+              }}
+            >
+              <table
+                style={{
+                  width: "100%",
+                  minWidth: "900px",
+                  borderCollapse: "collapse",
+                  background: "#ffffff",
+                }}
+              >
+                <thead>
+                  <tr
+                    style={{
+                      background: "#f8fafc",
+                      borderBottom: "1px solid #e5e7eb",
+                    }}
+                  >
+                    <th
+                      className="dashboard-th"
+                      style={{ textAlign: "left" }}
+                    >
+                      Site Name
+                    </th>
 
-            {sites.map(
-              (site) => (
-                <SiteCard
-                  key={site.id}
-                  site={site}
-                  panelCount={getSitePanelCount(
-                    site
-                  )}
-                  onOpen={() =>
-                    openSite(
-                      site
-                    )
-                  }
-                />
-              )
-            )}
+                    <th
+                      className="dashboard-th"
+                      style={{ textAlign: "left" }}
+                    >
+                      Client Name
+                    </th>
 
+                    <th
+                      className="dashboard-th"
+                      style={{ textAlign: "left" }}
+                    >
+                      Contact
+                    </th>
+
+                    <th
+                      className="dashboard-th"
+                      style={{ textAlign: "left" }}
+                    >
+                      Address
+                    </th>
+
+                    <th
+                      className="dashboard-th center"
+                    >
+                      Status
+                    </th>
+
+                    <th
+                      className="dashboard-th center"
+                    >
+                      Action
+                    </th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {sites.map((site) => {
+                    const status =
+                      site.status || "Active";
+
+                    return (
+                      <tr
+                        key={site.id}
+                        style={{
+                          borderBottom:
+                            "1px solid #eef0f3",
+                        }}
+                      >
+                        <td
+                          style={{
+                            padding: "15px 16px",
+                            fontWeight: "700",
+                            fontSize: "15px",
+                            color: "#111827",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {site.site_name || "Unnamed Site"}
+                        </td>
+
+                        <td
+                          style={{
+                            padding: "15px 16px",
+                            color: "#374151",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {site.client_name || "—"}
+                        </td>
+
+                        <td
+                          style={{
+                            padding: "15px 16px",
+                            color: "#374151",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {site.contact || "—"}
+                        </td>
+
+                        <td
+                          style={{
+                            padding: "15px 16px",
+                            color: "#4b5563",
+                            maxWidth: "320px",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                          title={site.address || ""}
+                        >
+                          {site.address || "—"}
+                        </td>
+
+                        <td
+                          style={{
+                            padding: "15px 16px",
+                            textAlign: "center",
+                          }}
+                        >
+                          <span
+                            className={
+                              String(status).toLowerCase() ===
+                              "active"
+                                ? "site-status active"
+                                : "site-status"
+                            }
+                          >
+                            {status}
+                          </span>
+                        </td>
+
+                        <td
+                          style={{
+                            padding: "15px 16px",
+                            textAlign: "center",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          <button
+                            type="button"
+                            className="danger-button"
+                            onClick={() =>
+                              deleteSite(site)
+                            }
+                          >
+                            Delete Site
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
 
@@ -2428,17 +3038,17 @@ function App() {
                         </td>
 
                         <td>
-                          {panel.length_num ??
+                          {panel.length ??
                             "-"}
                         </td>
 
                         <td>
-                          {panel.width_num ??
+                          {panel.width ??
                             "-"}
                         </td>
 
                         <td>
-                          {panel.thickness_num ??
+                          {panel.thickness ??
                             "-"}
                         </td>
 
@@ -3020,39 +3630,51 @@ function App() {
           selectedSite={
             selectedSite
           }
+
           setSelectedSite={
             setSelectedSite
           }
+
           setActivePage={
             setActivePage
           }
+
           importFile={
             importFile
           }
+
           importRows={
             importRows
           }
+
           importing={
             importing
           }
+
           handleFileSelect={
             handleFileSelect
           }
+
           importCutlist={
             importCutlist
           }
+
           setImportRows={
             setImportRows
           }
+
           setImportFile={
             setImportFile
           }
+
           setMessage={
             setMessage
           }
+
           setError={
             setError
           }
+
           createSiteRecord={
             createSiteRecord
           }
@@ -3305,40 +3927,13 @@ function CutlistImportPage({
   setError,
   createSiteRecord,
 }) {
-  const [siteName, setSiteName] =
-    useState("");
-
-  const [clientName, setClientName] =
-    useState("");
-
-  const [contact, setContact] =
-    useState("");
-
-  const [address, setAddress] =
-    useState("");
-
-  const [released, setReleased] =
-    useState(false);
-
+  const [siteName, setSiteName] = useState("");
+  const [clientName, setClientName] = useState("");
+  const [contact, setContact] = useState("");
+  const [address, setAddress] = useState("");
+  const [released, setReleased] = useState(false);
   const [releasedSite, setReleasedSite] =
     useState(null);
-
-  /* ======================================================
-     CLEAN CUTLIST PAGE RESET
-  ====================================================== */
-
-  useEffect(() => {
-    setSiteName("");
-    setClientName("");
-    setContact("");
-    setAddress("");
-    setReleased(false);
-    setReleasedSite(null);
-  }, []);
-
-  /* ======================================================
-     QR SITE NAME
-  ====================================================== */
 
   const previewSiteName =
     releasedSite?.site_name ||
@@ -3346,8 +3941,7 @@ function CutlistImportPage({
 
   const cleanSiteName =
     String(
-      previewSiteName ||
-        "SITE"
+      previewSiteName || "SITE"
     )
       .trim()
       .replace(
@@ -3359,30 +3953,6 @@ function CutlistImportPage({
         ""
       )
       .toUpperCase();
-
-  /* ======================================================
-     RESET CUTLIST
-  ====================================================== */
-
-  function clearCutlist() {
-    setImportRows([]);
-    setImportFile(null);
-
-    setSiteName("");
-    setClientName("");
-    setContact("");
-    setAddress("");
-
-    setReleased(false);
-    setReleasedSite(null);
-
-    setMessage("");
-    setError("");
-  }
-
-  /* ======================================================
-     QR DATA
-  ====================================================== */
 
   function getQrForRow(
     row,
@@ -3412,9 +3982,18 @@ function CutlistImportPage({
     );
   }
 
-  /* ======================================================
-     DOWNLOAD QR CUTLIST
-  ====================================================== */
+  function clearCutlist() {
+    setImportRows([]);
+    setImportFile(null);
+    setSiteName("");
+    setClientName("");
+    setContact("");
+    setAddress("");
+    setReleased(false);
+    setReleasedSite(null);
+    setMessage("");
+    setError("");
+  }
 
   function downloadQrCutlist() {
     if (!importRows.length) {
@@ -3467,10 +4046,6 @@ function CutlistImportPage({
     );
   }
 
-  /* ======================================================
-     RELEASE TO PRODUCTION
-  ====================================================== */
-
   async function releaseToProduction() {
     setError("");
     setMessage("");
@@ -3504,13 +4079,6 @@ function CutlistImportPage({
     }
 
     try {
-      /*
-      ------------------------------------------------------
-      STEP 1
-      CREATE SITE
-      ------------------------------------------------------
-      */
-
       const newSite =
         await createSiteRecord({
           site_name:
@@ -3526,23 +4094,9 @@ function CutlistImportPage({
             address.trim(),
         });
 
-      /*
-      ------------------------------------------------------
-      STEP 2
-      SELECT CREATED SITE
-      ------------------------------------------------------
-      */
-
       setSelectedSite(
         newSite
       );
-
-      /*
-      ------------------------------------------------------
-      STEP 3
-      IMPORT PANELS
-      ------------------------------------------------------
-      */
 
       await importCutlist(
         newSite,
@@ -3551,23 +4105,14 @@ function CutlistImportPage({
         }
       );
 
-      /*
-      ------------------------------------------------------
-      STEP 4
-      MARK RELEASED
-      ------------------------------------------------------
-      */
-
       setReleasedSite(
         newSite
       );
 
-      setReleased(
-        true
-      );
+      setReleased(true);
 
       setMessage(
-        `Released ${importRows.length} cutlist rows to production for ${newSite.site_name}.`
+        "Site created, released to production"
       );
     } catch (err) {
       console.error(
@@ -3575,13 +4120,8 @@ function CutlistImportPage({
         err
       );
 
-      setReleased(
-        false
-      );
-
-      setReleasedSite(
-        null
-      );
+      setReleased(false);
+      setReleasedSite(null);
 
       setError(
         err.message ||
@@ -3590,109 +4130,146 @@ function CutlistImportPage({
     }
   }
 
-  /* ======================================================
-     INPUT STYLE
-  ====================================================== */
-
-  const inputStyle = {
+  const fieldStyle = {
     width: "100%",
     boxSizing:
       "border-box",
+    height: "40px",
     padding:
-      "12px 13px",
+      "8px 11px",
     border:
       "1px solid #d1d5db",
     borderRadius:
-      "8px",
+      "7px",
     fontSize:
-      "15px",
+      "14px",
     background:
-      "#ffffff",
+      "#fff",
+    outline:
+      "none",
   };
 
-  /* ======================================================
-     PAGE
-  ====================================================== */
+  const labelStyle = {
+    display:
+      "block",
+    marginBottom:
+      "5px",
+    fontSize:
+      "12px",
+    fontWeight:
+      "700",
+    color:
+      "#374151",
+  };
+
+  const cardStyle = {
+    background:
+      "#fff",
+    border:
+      "1px solid #e5e7eb",
+    borderRadius:
+      "10px",
+    padding:
+      "14px",
+  };
 
   return (
     <>
-      {/* ==================================================
-          PAGE HEADER
-      ================================================== */}
-
-      <header className="topbar">
-
+      <header
+        className="topbar"
+        style={{
+          marginBottom:
+            "12px",
+        }}
+      >
         <div>
-
           <p className="eyebrow">
             TRACKERZ PRODUCTION
           </p>
 
-          <h2>
+          <h2
+            style={{
+              marginBottom:
+                "3px",
+            }}
+          >
             Cutlist Import
           </h2>
 
           <p className="subtitle">
-            Create a new site, upload the
-            cutlist and release the panels
-            to production.
+            Create site → Upload cutlist → Release to production
           </p>
-
-        </div>
-
-        {/* NO DASHBOARD BUTTON HERE */}
-
-      </header>
-
-      {/* ==================================================
-          1. NEW SITE
-      ================================================== */}
-
-      <section className="panel">
-
-        <div className="section-header">
-
-          <div>
-
-            <h2>
-              1. New Site
-            </h2>
-
-            <p>
-              Enter the site information
-              for this production order.
-            </p>
-
-          </div>
-
         </div>
 
         <div
           style={{
             display:
-              "grid",
-            gridTemplateColumns:
-              "repeat(2, minmax(240px, 1fr))",
+              "flex",
+            alignItems:
+              "center",
             gap:
-              "18px",
+              "8px",
           }}
         >
-
-          {/* SITE NAME */}
-
-          <label>
-
+          {released && (
             <span
               style={{
-                display:
-                  "block",
-                marginBottom:
-                  "7px",
+                padding:
+                  "7px 11px",
+                borderRadius:
+                  "999px",
+                background:
+                  "#dcfce7",
+                color:
+                  "#166534",
+                fontSize:
+                  "12px",
                 fontWeight:
                   "700",
-                color:
-                  "#374151",
               }}
+            >
+              ✓ Released
+            </span>
+          )}
+
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() =>
+              setActivePage(
+                "sites"
+              )
+            }
+          >
+            Sites
+          </button>
+        </div>
+      </header>
+
+      <section
+        className="panel"
+        style={{
+          padding:
+            "14px",
+        }}
+      >
+        <div
+          style={{
+            display:
+              "grid",
+            gridTemplateColumns:
+              "minmax(180px, 1.15fr) minmax(180px, 1fr) minmax(150px, .8fr) minmax(200px, 1.5fr)",
+            gap:
+              "10px",
+            alignItems:
+              "end",
+          }}
+        >
+          <label>
+            <span
+              style={
+                labelStyle
+              }
             >
               Site Name *
             </span>
@@ -3719,31 +4296,21 @@ function CutlistImportPage({
                 );
               }}
               disabled={
-                released
+                released ||
+                importing
               }
-              placeholder="Example: Siva kitchen"
+              placeholder="Example: Siva Kitchen"
               style={
-                inputStyle
+                fieldStyle
               }
             />
-
           </label>
 
-          {/* CLIENT NAME */}
-
           <label>
-
             <span
-              style={{
-                display:
-                  "block",
-                marginBottom:
-                  "7px",
-                fontWeight:
-                  "700",
-                color:
-                  "#374151",
-              }}
+              style={
+                labelStyle
+              }
             >
               Client Name *
             </span>
@@ -3770,31 +4337,21 @@ function CutlistImportPage({
                 );
               }}
               disabled={
-                released
+                released ||
+                importing
               }
-              placeholder="Example: Agna Ventures"
+              placeholder="Client"
               style={
-                inputStyle
+                fieldStyle
               }
             />
-
           </label>
 
-          {/* CONTACT */}
-
           <label>
-
             <span
-              style={{
-                display:
-                  "block",
-                marginBottom:
-                  "7px",
-                fontWeight:
-                  "700",
-                color:
-                  "#374151",
-              }}
+              style={
+                labelStyle
+              }
             >
               Contact
             </span>
@@ -3813,31 +4370,21 @@ function CutlistImportPage({
                 )
               }
               disabled={
-                released
+                released ||
+                importing
               }
-              placeholder="Phone number"
+              placeholder="Phone"
               style={
-                inputStyle
+                fieldStyle
               }
             />
-
           </label>
 
-          {/* ADDRESS */}
-
           <label>
-
             <span
-              style={{
-                display:
-                  "block",
-                marginBottom:
-                  "7px",
-                fontWeight:
-                  "700",
-                color:
-                  "#374151",
-              }}
+              style={
+                labelStyle
+              }
             >
               Address
             </span>
@@ -3856,352 +4403,471 @@ function CutlistImportPage({
                 )
               }
               disabled={
-                released
+                released ||
+                importing
               }
               placeholder="Site address"
               style={
-                inputStyle
+                fieldStyle
               }
             />
-
           </label>
-
-        </div>
-
-        {/* RELEASED STATUS */}
-
-        {releasedSite && (
-          <div
-            style={{
-              marginTop:
-                "18px",
-              padding:
-                "13px 15px",
-              border:
-                "1px solid #bbf7d0",
-              background:
-                "#f0fdf4",
-              borderRadius:
-                "9px",
-              color:
-                "#166534",
-              fontWeight:
-                "600",
-            }}
-          >
-            ✓ Site created and
-            released:
-            {" "}
-            {
-              releasedSite.site_name
-            }
-            {" — "}
-            {
-              releasedSite.client_name
-            }
-          </div>
-        )}
-
-      </section>
-
-      {/* ==================================================
-          2. UPLOAD CUTLIST
-      ================================================== */}
-
-      <section className="panel">
-
-        <div className="section-header">
-
-          <div>
-
-            <h2>
-              2. Upload Cutlist
-            </h2>
-
-            <p>
-              Select the Excel cutlist
-              and preview it before
-              releasing to production.
-            </p>
-
-          </div>
-
         </div>
 
         <div
-          className="upload-area"
+          style={{
+            display:
+              "grid",
+            gridTemplateColumns:
+              "minmax(280px, 1fr) auto auto auto",
+            gap:
+              "10px",
+            alignItems:
+              "center",
+            marginTop:
+              "12px",
+          }}
         >
-
-          <div className="upload-icon">
-            XLS
-          </div>
-
-          <h3>
-            Select Excel Cutlist
-          </h3>
-
-          <p>
-            Supported formats:
-            .xlsx, .xls, .csv
-          </p>
-
-          <input
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            onChange={(
-              event
-            ) => {
-              setReleased(
-                false
-              );
-
-              setReleasedSite(
-                null
-              );
-
-              handleFileSelect(
-                event
-              );
+          <label
+            style={{
+              ...cardStyle,
+              padding:
+                "10px 12px",
+              cursor:
+                released
+                  ? "default"
+                  : "pointer",
             }}
-            disabled={
-              importing
-            }
-          />
-
-          {importFile && (
-            <div className="selected-file">
-
-              <strong>
-                Selected file:
-              </strong>{" "}
-
-              {
-                importFile.name
-              }
-
-            </div>
-          )}
-
-        </div>
-
-      </section>
-
-      {/* ==================================================
-          3. CUTLIST PREVIEW
-      ================================================== */}
-
-      {importRows.length >
-        0 && (
-        <section className="panel">
-
-          <div className="section-header">
-
-            <div>
-
-              <h2>
-                3. Cutlist Preview
-              </h2>
-
-              <p>
-                Review the imported rows
-                before releasing them.
-              </p>
-
-            </div>
-
+          >
             <span
+              style={
+                labelStyle
+              }
+            >
+              Excel Cutlist
+            </span>
+
+            <input
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              onChange={(
+                event
+              ) => {
+                setReleased(
+                  false
+                );
+
+                setReleasedSite(
+                  null
+                );
+
+                handleFileSelect(
+                  event
+                );
+              }}
+              disabled={
+                released ||
+                importing
+              }
               style={{
-                padding:
-                  "8px 12px",
-                borderRadius:
-                  "8px",
-                background:
-                  "#eff6ff",
-                color:
-                  "#1d4ed8",
-                fontWeight:
-                  "700",
+                width:
+                  "100%",
                 fontSize:
                   "13px",
+              }}
+            />
+
+            {importFile && (
+              <div
+                style={{
+                  marginTop:
+                    "5px",
+                  fontSize:
+                    "11px",
+                  color:
+                    "#4b5563",
+                  overflow:
+                    "hidden",
+                  textOverflow:
+                    "ellipsis",
+                  whiteSpace:
+                    "nowrap",
+                }}
+              >
+                📄{" "}
+                {
+                  importFile.name
+                }
+              </div>
+            )}
+          </label>
+
+          <div
+            style={{
+              ...cardStyle,
+              minWidth:
+                "105px",
+              textAlign:
+                "center",
+              padding:
+                "10px 14px",
+            }}
+          >
+            <div
+              style={{
+                fontSize:
+                  "10px",
+                color:
+                  "#6b7280",
+                fontWeight:
+                  "700",
+              }}
+            >
+              CUTLIST ROWS
+            </div>
+
+            <strong
+              style={{
+                fontSize:
+                  "21px",
+                lineHeight:
+                  "1.2",
               }}
             >
               {
                 importRows.length
-              }{" "}
-              Rows Loaded
-            </span>
-
+              }
+            </strong>
           </div>
 
           <div
-            className="panel-table-wrapper"
+            style={{
+              ...cardStyle,
+              minWidth:
+                "105px",
+              textAlign:
+                "center",
+              padding:
+                "10px 14px",
+            }}
           >
-
-            <table
-              className="panel-table"
+            <div
+              style={{
+                fontSize:
+                  "10px",
+                color:
+                  "#6b7280",
+                fontWeight:
+                  "700",
+              }}
             >
+              QR READY
+            </div>
 
-              <thead>
+            <strong
+              style={{
+                fontSize:
+                  "21px",
+                lineHeight:
+                  "1.2",
+                color:
+                  importRows.length
+                    ? "#16a34a"
+                    : "#6b7280",
+              }}
+            >
+              {
+                importRows.length
+              }
+            </strong>
+          </div>
 
-                <tr>
+          <div
+            style={{
+              ...cardStyle,
+              minWidth:
+                "130px",
+              textAlign:
+                "center",
+              padding:
+                "10px 14px",
+            }}
+          >
+            <div
+              style={{
+                fontSize:
+                  "10px",
+                color:
+                  "#6b7280",
+                fontWeight:
+                  "700",
+              }}
+            >
+              STATUS
+            </div>
 
-                  {Object.keys(
-                    importRows[0]
-                  )
+            <strong
+              style={{
+                fontSize:
+                  "13px",
+                color:
+                  released
+                    ? "#15803d"
+                    : importRows.length
+                      ? "#1d4ed8"
+                      : "#6b7280",
+              }}
+            >
+              {released
+                ? "RELEASED"
+                : importRows.length
+                  ? "READY"
+                  : "WAITING"}
+            </strong>
+          </div>
+        </div>
+
+        {importRows.length >
+          0 && (
+          <div
+            style={{
+              marginTop:
+                "12px",
+              border:
+                "1px solid #e5e7eb",
+              borderRadius:
+                "9px",
+              overflow:
+                "hidden",
+            }}
+          >
+            <div
+              style={{
+                display:
+                  "flex",
+                alignItems:
+                  "center",
+                justifyContent:
+                  "space-between",
+                padding:
+                  "9px 12px",
+                background:
+                  "#f8fafc",
+                borderBottom:
+                  "1px solid #e5e7eb",
+              }}
+            >
+              <div>
+                <strong
+                  style={{
+                    fontSize:
+                      "13px",
+                  }}
+                >
+                  Cutlist Preview
+                </strong>
+
+                <span
+                  style={{
+                    marginLeft:
+                      "8px",
+                    fontSize:
+                      "11px",
+                    color:
+                      "#6b7280",
+                  }}
+                >
+                  First 8 rows shown
+                </span>
+              </div>
+
+              <span
+                style={{
+                  fontSize:
+                    "11px",
+                  fontWeight:
+                    "700",
+                  color:
+                    "#1d4ed8",
+                }}
+              >
+                {
+                  importRows.length
+                }{" "}
+                rows loaded
+              </span>
+            </div>
+
+            <div
+              style={{
+                overflowX:
+                  "auto",
+                maxHeight:
+                  "285px",
+                overflowY:
+                  "auto",
+              }}
+            >
+              <table
+                style={{
+                  width:
+                    "100%",
+                  minWidth:
+                    "760px",
+                  borderCollapse:
+                    "collapse",
+                  fontSize:
+                    "11px",
+                }}
+              >
+                <thead
+                  style={{
+                    position:
+                      "sticky",
+                    top:
+                      0,
+                    zIndex:
+                      1,
+                  }}
+                >
+                  <tr>
+                    {Object.keys(
+                      importRows[0]
+                    )
+                      .slice(
+                        0,
+                        8
+                      )
+                      .map(
+                        (
+                          key
+                        ) => (
+                          <th
+                            key={
+                              key
+                            }
+                            style={{
+                              padding:
+                                "7px 8px",
+                              textAlign:
+                                "left",
+                              background:
+                                "#f1f5f9",
+                              borderBottom:
+                                "1px solid #e5e7eb",
+                              whiteSpace:
+                                "nowrap",
+                            }}
+                          >
+                            {
+                              key
+                            }
+                          </th>
+                        )
+                      )}
+
+                    <th
+                      style={{
+                        padding:
+                          "7px 8px",
+                        textAlign:
+                          "left",
+                        background:
+                          "#f1f5f9",
+                        borderBottom:
+                          "1px solid #e5e7eb",
+                        whiteSpace:
+                          "nowrap",
+                      }}
+                    >
+                      QR Data
+                    </th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {importRows
                     .slice(
                       0,
-                      10
+                      8
                     )
                     .map(
                       (
-                        key
+                        row,
+                        index
                       ) => (
-                        <th
+                        <tr
                           key={
-                            key
+                            index
                           }
                         >
-                          {key}
-                        </th>
+                          {Object.keys(
+                            importRows[0]
+                          )
+                            .slice(
+                              0,
+                              8
+                            )
+                            .map(
+                              (
+                                key
+                              ) => (
+                                <td
+                                  key={
+                                    key
+                                  }
+                                  style={{
+                                    padding:
+                                      "6px 8px",
+                                    borderBottom:
+                                      "1px solid #f1f5f9",
+                                    whiteSpace:
+                                      "nowrap",
+                                    maxWidth:
+                                      "180px",
+                                    overflow:
+                                      "hidden",
+                                    textOverflow:
+                                      "ellipsis",
+                                  }}
+                                >
+                                  {String(
+                                    row[
+                                      key
+                                    ] ??
+                                      ""
+                                  )}
+                                </td>
+                              )
+                            )}
+
+                          <td
+                            style={{
+                              padding:
+                                "6px 8px",
+                              borderBottom:
+                                "1px solid #f1f5f9",
+                              whiteSpace:
+                                "nowrap",
+                              fontWeight:
+                                "600",
+                              color:
+                                "#374151",
+                            }}
+                          >
+                            {getQrForRow(
+                              row,
+                              index
+                            )}
+                          </td>
+                        </tr>
                       )
                     )}
-
-                  <th>
-                    QR Data
-                  </th>
-
-                </tr>
-
-              </thead>
-
-              <tbody>
-
-                {importRows
-                  .slice(
-                    0,
-                    10
-                  )
-                  .map(
-                    (
-                      row,
-                      index
-                    ) => (
-                      <tr
-                        key={
-                          index
-                        }
-                      >
-
-                        {Object.keys(
-                          importRows[0]
-                        )
-                          .slice(
-                            0,
-                            10
-                          )
-                          .map(
-                            (
-                              key
-                            ) => (
-                              <td
-                                key={
-                                  key
-                                }
-                              >
-                                {String(
-                                  row[
-                                    key
-                                  ] ??
-                                    ""
-                                )}
-                              </td>
-                            )
-                          )}
-
-                        <td>
-
-                          <code>
-                            {
-                              getQrForRow(
-                                row,
-                                index
-                              )
-                            }
-                          </code>
-
-                        </td>
-
-                      </tr>
-                    )
-                  )}
-
-              </tbody>
-
-            </table>
-
+                </tbody>
+              </table>
+            </div>
           </div>
-
-          {importRows.length >
-            10 && (
-            <p
-              className="preview-note"
-            >
-              Showing first 10 rows.
-              All{" "}
-              {
-                importRows.length
-              }{" "}
-              rows will be imported.
-            </p>
-          )}
-
-        </section>
-      )}
-
-      {/* ==================================================
-          4. PRODUCTION ACTIONS
-      ================================================== */}
-
-      <section className="panel">
-
-        <div className="section-header">
-
-          <div>
-
-            <h2>
-              4. Production Actions
-            </h2>
-
-            <p>
-              Release the site and
-              create its panel records
-              in Supabase.
-            </p>
-
-          </div>
-
-          {released && (
-            <span
-              style={{
-                padding:
-                  "8px 13px",
-                borderRadius:
-                  "999px",
-                background:
-                  "#dcfce7",
-                color:
-                  "#166534",
-                fontWeight:
-                  "700",
-                fontSize:
-                  "13px",
-              }}
-            >
-              ✓ Released
-            </span>
-          )}
-
-        </div>
+        )}
 
         <div
           style={{
@@ -4210,14 +4876,17 @@ function CutlistImportPage({
             alignItems:
               "center",
             gap:
-              "12px",
+              "9px",
             flexWrap:
               "wrap",
+            marginTop:
+              "12px",
+            paddingTop:
+              "12px",
+            borderTop:
+              "1px solid #eef0f3",
           }}
         >
-
-          {/* RELEASE TO PRODUCTION */}
-
           <button
             type="button"
             className="primary-button"
@@ -4239,36 +4908,20 @@ function CutlistImportPage({
                 : "✓ Release to Production"}
           </button>
 
-          {/* DOWNLOAD QR CUTLIST */}
-
           <button
             type="button"
-            className={
-              released
-                ? "primary-button"
-                : "secondary-button"
-            }
+            className="secondary-button"
             disabled={
               importing ||
-              !importRows.length ||
-              !released
+              !released ||
+              !importRows.length
             }
             onClick={
               downloadQrCutlist
             }
-            style={
-              released
-                ? {
-                    boxShadow:
-                      "0 0 0 3px rgba(37, 99, 235, 0.12)",
-                  }
-                : undefined
-            }
           >
             ↓ Download QR Cutlist
           </button>
-
-          {/* CLEAR */}
 
           <button
             type="button"
@@ -4283,414 +4936,62 @@ function CutlistImportPage({
             Clear
           </button>
 
-        </div>
-
-        {/* VALIDATION MESSAGE */}
-
-        {!siteName.trim() && (
-          <p
-            style={{
-              margin:
-                "13px 0 0",
-              color:
-                "#b45309",
-              fontSize:
-                "13px",
-            }}
-          >
-            Enter the new site name
-            first.
-          </p>
-        )}
-
-        {siteName.trim() &&
-          !clientName.trim() && (
-            <p
-              style={{
-                margin:
-                  "13px 0 0",
-                color:
-                  "#b45309",
-                fontSize:
-                  "13px",
-              }}
-            >
-              Enter the client name
-              before releasing.
-            </p>
-          )}
-
-        {clientName.trim() &&
-          !importRows.length && (
-            <p
-              style={{
-                margin:
-                  "13px 0 0",
-                color:
-                  "#b45309",
-                fontSize:
-                  "13px",
-              }}
-            >
-              Upload the Excel cutlist
-              before releasing.
-            </p>
-          )}
-
-        {/* AFTER RELEASE */}
-
-        {released && (
           <div
             style={{
-              marginTop:
-                "15px",
-              padding:
-                "13px 15px",
-              border:
-                "1px solid #bfdbfe",
-              background:
-                "#eff6ff",
-              borderRadius:
-                "8px",
-              color:
-                "#1e40af",
+              marginLeft:
+                "auto",
               fontSize:
-                "13px",
+                "11px",
+              color:
+                "#6b7280",
             }}
           >
-            <strong>
-              Production released.
-            </strong>{" "}
-            The site and panels are now
-            available in the Dashboard
-            and QR Tracking.
+            {released
+              ? "✓ Site created, released to production"
+              : "Enter site + client, upload cutlist, then release."}
           </div>
-        )}
-
-      </section>
-
-      {/* ==================================================
-          5. EXISTING SITE
-      ================================================== */}
-
-      <section
-        style={{
-          marginTop:
-            "18px",
-          padding:
-            "14px 16px",
-          color:
-            "#6b7280",
-          fontSize:
-            "13px",
-          textAlign:
-            "center",
-        }}
-      >
-        Need to work with an existing
-        project?{" "}
-
-        <button
-          type="button"
-          onClick={() =>
-            setActivePage(
-              "sites"
-            )
-          }
-          style={{
-            border:
-              "none",
-            background:
-              "transparent",
-            color:
-              "#2563eb",
-            fontWeight:
-              "700",
-            cursor:
-              "pointer",
-          }}
-        >
-          Open Sites
-        </button>
-
-      </section>
-    </>
-  );
-}
-
-/* =========================================================
-   REPORTS
-========================================================= */
-
-function ReportsPage({
-  sites,
-  panels,
-  getSiteProgress,
-  isPanelPacked,
-}) {
-  const totalQuantity =
-    panels.reduce(
-      (sum, panel) =>
-        sum +
-        Number(
-          panel.quantity || 1
-        ),
-      0
-    );
-
-  const packedQuantity =
-    panels.reduce(
-      (sum, panel) =>
-        sum +
-        (isPanelPacked(
-          panel
-        )
-          ? Number(
-              panel.quantity ||
-                1
-            )
-          : 0),
-      0
-    );
-
-  const pendingQuantity =
-    Math.max(
-      totalQuantity -
-        packedQuantity,
-      0
-    );
-
-  return (
-    <>
-
-      <header className="topbar">
-
-        <div>
-
-          <p className="eyebrow">
-            TRACKERZ PRODUCTION
-          </p>
-
-          <h2>
-            Reports
-          </h2>
-
-          <p className="subtitle">
-            Production summary from
-            Supabase sites and panels.
-          </p>
-
         </div>
 
-      </header>
+        {released &&
+          releasedSite && (
+            <div
+              style={{
+                marginTop:
+                  "10px",
+                padding:
+                  "10px 12px",
+                borderRadius:
+                  "8px",
+                border:
+                  "1px solid #bbf7d0",
+                background:
+                  "#f0fdf4",
+                color:
+                  "#166534",
+                fontSize:
+                  "13px",
+                fontWeight:
+                  "700",
+              }}
+            >
+              ✓ Site created, released to production
 
-      <div className="stats-grid">
-
-        <div className="stat-card">
-
-          <div className="stat-icon">
-            ⌂
-          </div>
-
-          <div>
-
-            <span>
-              Total Sites
-            </span>
-
-            <strong>
-              {sites.length}
-            </strong>
-
-          </div>
-
-        </div>
-
-        <div className="stat-card">
-
-          <div className="stat-icon">
-            ▤
-          </div>
-
-          <div>
-
-            <span>
-              Total Panels
-            </span>
-
-            <strong>
-              {totalQuantity}
-            </strong>
-
-          </div>
-
-        </div>
-
-        <div className="stat-card">
-
-          <div className="stat-icon">
-            ✓
-          </div>
-
-          <div>
-
-            <span>
-              Packed
-            </span>
-
-            <strong>
-              {packedQuantity}
-            </strong>
-
-          </div>
-
-        </div>
-
-        <div className="stat-card">
-
-          <div className="stat-icon">
-            !
-          </div>
-
-          <div>
-
-            <span>
-              Balance
-            </span>
-
-            <strong>
-              {pendingQuantity}
-            </strong>
-
-          </div>
-
-        </div>
-
-      </div>
-
-      <section className="panel">
-
-        <div className="section-header">
-
-          <div>
-
-            <h2>
-              Site Production Report
-            </h2>
-
-            <p>
-              Current panel progress
-              for every site.
-            </p>
-
-          </div>
-
-        </div>
-
-        <div className="panel-table-wrapper">
-
-          <table className="panel-table">
-
-            <thead>
-
-              <tr>
-
-                <th>
-                  Site
-                </th>
-
-                <th>
-                  Client
-                </th>
-
-                <th>
-                  Total
-                </th>
-
-                <th>
-                  Packed
-                </th>
-
-                <th>
-                  Balance
-                </th>
-
-                <th>
-                  Progress
-                </th>
-
-              </tr>
-
-            </thead>
-
-            <tbody>
-
-              {sites.map(
-                (site) => {
-                  const progress =
-                    getSiteProgress(
-                      site
-                    );
-
-                  return (
-                    <tr
-                      key={
-                        site.id
-                      }
-                    >
-
-                      <td>
-                        <strong>
-                          {
-                            site.site_name
-                          }
-                        </strong>
-                      </td>
-
-                      <td>
-                        {
-                          site.client_name ||
-                          "—"
-                        }
-                      </td>
-
-                      <td>
-                        {
-                          progress.total
-                        }
-                      </td>
-
-                      <td>
-                        {
-                          progress.packed
-                        }
-                      </td>
-
-                      <td>
-                        {
-                          progress.balance
-                        }
-                      </td>
-
-                      <td>
-                        {
-                          progress.percentage
-                        }%
-                      </td>
-
-                    </tr>
-                  );
+              <span
+                style={{
+                  marginLeft:
+                    "8px",
+                  fontWeight:
+                    "500",
+                }}
+              >
+                —{" "}
+                {
+                  releasedSite.site_name
                 }
-              )}
-
-            </tbody>
-
-          </table>
-
-        </div>
-
+              </span>
+            </div>
+          )}
       </section>
-
     </>
   );
 }
@@ -4704,83 +5005,9 @@ function SiteCard({
   panelCount,
   onOpen,
 }) {
-  const status =
-    String(
-      site.status ||
-        "Active"
-    ).toLowerCase();
-
-  return (
-    <div className="site-card">
-
-      <div className="site-card-top">
-
-        <div className="site-icon">
-          ⌂
-        </div>
-
-        <span
-          className={
-            status === "active"
-              ? "site-status active"
-              : "site-status"
-          }
-        >
-          {site.status ||
-            "Active"}
-        </span>
-
-      </div>
-
-      <h3>
-        {site.site_name}
-      </h3>
-
-      <p>
-        {site.client_name ||
-          "No client assigned"}
-      </p>
-
-      <div className="site-card-info">
-
-        <div>
-
-          <span>
-            Panels
-          </span>
-
-          <strong>
-            {panelCount}
-          </strong>
-
-        </div>
-
-        <div>
-
-          <span>
-            Contact
-          </span>
-
-          <strong>
-            {site.contact ||
-              "-"}
-          </strong>
-
-        </div>
-
-      </div>
-
-      <button
-        className="site-open-button"
-        onClick={
-          onOpen
-        }
-      >
-        Open Site →
-      </button>
-
-    </div>
-  );
+  // Kept for compatibility with the existing file.
+  // The Sites page now uses the read-only table above.
+  return null;
 }
 
 export default App;
