@@ -57,15 +57,13 @@ function Dispatch() {
      SITE
   ====================================================== */
 
-  const [selectedSiteId, setSelectedSiteId] =
-    useState("");
+  const [selectedSiteId, setSelectedSiteId] = useState("");
 
   /* ======================================================
      PACKET
   ====================================================== */
 
-  const [selectedPacketId, setSelectedPacketId] =
-    useState(null);
+  const [selectedPacketId, setSelectedPacketId] = useState(null);
 
   /* ======================================================
      SCANNER
@@ -139,12 +137,10 @@ function Dispatch() {
       );
     }
 
-    const currentCompanyId =
-      membership.company_id;
+    const currentCompanyId = membership.company_id;
 
     const currentCompanyName =
-      membership.companies?.company_name ||
-      "";
+      membership.companies?.company_name || "";
 
     setCompanyId(currentCompanyId);
     setCompanyName(currentCompanyName);
@@ -171,10 +167,7 @@ function Dispatch() {
     } = await supabase
       .from("sites")
       .select("*")
-      .eq(
-        "company_id",
-        currentCompanyId
-      )
+      .eq("company_id", currentCompanyId)
       .order("id", {
         ascending: true,
       });
@@ -183,10 +176,7 @@ function Dispatch() {
       throw sitesError;
     }
 
-    const siteList =
-      Array.isArray(data)
-        ? data
-        : [];
+    const siteList = Array.isArray(data) ? data : [];
 
     setSites(siteList);
 
@@ -195,31 +185,20 @@ function Dispatch() {
 
   /* ======================================================
      LOAD COMPANY PACKETS
-     
-     We first obtain the company sites.
-     Then packets are loaded only for those sites.
 
-     This is intentionally NOT:
-
-       .from("packets").select("*")
-
-     without a company/site restriction.
+     Existing company/site restriction preserved.
   ====================================================== */
 
   async function loadPackets(companySites) {
-    const siteIds =
-      Array.isArray(companySites)
-        ? companySites
-            .map(
-              (site) =>
-                site.id
-            )
-            .filter(
-              (id) =>
-                id !== null &&
-                id !== undefined
-            )
-        : [];
+    const siteIds = Array.isArray(companySites)
+      ? companySites
+          .map((site) => site.id)
+          .filter(
+            (id) =>
+              id !== null &&
+              id !== undefined
+          )
+      : [];
 
     if (siteIds.length === 0) {
       setPackets([]);
@@ -232,10 +211,7 @@ function Dispatch() {
     } = await supabase
       .from("packets")
       .select("*")
-      .in(
-        "site_id",
-        siteIds
-      )
+      .in("site_id", siteIds)
       .order("id", {
         ascending: false,
       });
@@ -244,10 +220,7 @@ function Dispatch() {
       throw packetsError;
     }
 
-    const packetList =
-      Array.isArray(data)
-        ? data
-        : [];
+    const packetList = Array.isArray(data) ? data : [];
 
     setPackets(packetList);
 
@@ -258,22 +231,16 @@ function Dispatch() {
      LOAD PACKET/PANEL RELATIONSHIPS
   ====================================================== */
 
-  async function loadPacketPanels(
-    companyPackets
-  ) {
-    const packetIds =
-      Array.isArray(companyPackets)
-        ? companyPackets
-            .map(
-              (packet) =>
-                packet.id
-            )
-            .filter(
-              (id) =>
-                id !== null &&
-                id !== undefined
-            )
-        : [];
+  async function loadPacketPanels(companyPackets) {
+    const packetIds = Array.isArray(companyPackets)
+      ? companyPackets
+          .map((packet) => packet.id)
+          .filter(
+            (id) =>
+              id !== null &&
+              id !== undefined
+          )
+      : [];
 
     if (packetIds.length === 0) {
       setPacketPanels([]);
@@ -286,10 +253,7 @@ function Dispatch() {
     } = await supabase
       .from("packet_panels")
       .select("*")
-      .in(
-        "packet_id",
-        packetIds
-      )
+      .in("packet_id", packetIds)
       .order("id", {
         ascending: true,
       });
@@ -298,14 +262,9 @@ function Dispatch() {
       throw relationError;
     }
 
-    const relationList =
-      Array.isArray(data)
-        ? data
-        : [];
+    const relationList = Array.isArray(data) ? data : [];
 
-    setPacketPanels(
-      relationList
-    );
+    setPacketPanels(relationList);
 
     return relationList;
   }
@@ -314,24 +273,16 @@ function Dispatch() {
      LOAD PANELS
   ====================================================== */
 
-  async function loadPanels(
-    companyPacketPanels
-  ) {
-    const panelIds =
-      Array.isArray(
-        companyPacketPanels
-      )
-        ? companyPacketPanels
-            .map(
-              (row) =>
-                row.panel_id
-            )
-            .filter(
-              (id) =>
-                id !== null &&
-                id !== undefined
-            )
-        : [];
+  async function loadPanels(companyPacketPanels) {
+    const panelIds = Array.isArray(companyPacketPanels)
+      ? companyPacketPanels
+          .map((row) => row.panel_id)
+          .filter(
+            (id) =>
+              id !== null &&
+              id !== undefined
+          )
+      : [];
 
     if (panelIds.length === 0) {
       setPanels([]);
@@ -344,10 +295,7 @@ function Dispatch() {
     } = await supabase
       .from("panels")
       .select("*")
-      .in(
-        "id",
-        panelIds
-      )
+      .in("id", panelIds)
       .order("id", {
         ascending: true,
       });
@@ -356,10 +304,7 @@ function Dispatch() {
       throw panelsError;
     }
 
-    const panelList =
-      Array.isArray(data)
-        ? data
-        : [];
+    const panelList = Array.isArray(data) ? data : [];
 
     setPanels(panelList);
 
@@ -376,68 +321,44 @@ function Dispatch() {
       setError("");
 
       const {
-        companyId:
-          currentCompanyId,
-        companyName:
-          currentCompanyName,
-      } =
-        await loadUserCompany();
+        companyId: currentCompanyId,
+        companyName: currentCompanyName,
+      } = await loadUserCompany();
 
       const companySites =
-        await loadSites(
-          currentCompanyId
-        );
+        await loadSites(currentCompanyId);
 
       const companyPackets =
-        await loadPackets(
-          companySites
-        );
+        await loadPackets(companySites);
 
       const companyPacketPanels =
-        await loadPacketPanels(
-          companyPackets
-        );
+        await loadPacketPanels(companyPackets);
 
-      await loadPanels(
-        companyPacketPanels
-      );
+      await loadPanels(companyPacketPanels);
 
-      setCompanyId(
-        currentCompanyId
-      );
-
-      setCompanyName(
-        currentCompanyName || ""
-      );
+      setCompanyId(currentCompanyId);
+      setCompanyName(currentCompanyName || "");
 
       /*
       ------------------------------------------------------
-      IMPORTANT
-
       Do NOT automatically select the first site.
-
-      The factory user must deliberately choose the site.
       ------------------------------------------------------
       */
 
-      setSelectedSiteId(
-        (currentSelectedSiteId) => {
-          if (
-            currentSelectedSiteId &&
-            companySites.some(
-              (site) =>
-                String(site.id) ===
-                String(
-                  currentSelectedSiteId
-                )
-            )
-          ) {
-            return currentSelectedSiteId;
-          }
-
-          return "";
+      setSelectedSiteId((currentSelectedSiteId) => {
+        if (
+          currentSelectedSiteId &&
+          companySites.some(
+            (site) =>
+              String(site.id) ===
+              String(currentSelectedSiteId)
+          )
+        ) {
+          return currentSelectedSiteId;
         }
-      );
+
+        return "";
+      });
     } catch (err) {
       console.error(
         "Dispatch data loading error:",
@@ -470,16 +391,10 @@ function Dispatch() {
       loadAllData();
     };
 
-    window.addEventListener(
-      "focus",
-      handleFocus
-    );
+    window.addEventListener("focus", handleFocus);
 
     return () => {
-      window.removeEventListener(
-        "focus",
-        handleFocus
-      );
+      window.removeEventListener("focus", handleFocus);
     };
   }, []);
 
@@ -499,21 +414,10 @@ function Dispatch() {
           String(selectedSiteId)
       ) || null
     );
-  }, [
-    sites,
-    selectedSiteId,
-  ]);
+  }, [sites, selectedSiteId]);
 
   /* ======================================================
      FILTER PACKETS
-
-     THIS IS THE MAIN BEHAVIOR CHANGE.
-
-     No site selected:
-       return []
-
-     Site selected:
-       return ONLY that site's packets.
   ====================================================== */
 
   const filteredPackets = useMemo(() => {
@@ -526,88 +430,63 @@ function Dispatch() {
         String(packet.site_id) ===
         String(selectedSiteId)
     );
-  }, [
-    packets,
-    selectedSiteId,
-  ]);
+  }, [packets, selectedSiteId]);
 
   /* ======================================================
      READY FOR DISPATCH
   ====================================================== */
 
   const readyPackets = useMemo(() => {
-    return filteredPackets.filter(
-      (packet) => {
-        const status =
-          String(
-            packet.status || ""
-          )
-            .trim()
-            .toLowerCase();
+    return filteredPackets.filter((packet) => {
+      const status = String(
+        packet.status || ""
+      )
+        .trim()
+        .toLowerCase();
 
-        return (
-          status === "closed" &&
-          !packet.dispatched_at
-        );
-      }
-    );
-  }, [
-    filteredPackets,
-  ]);
+      return (
+        status === "closed" &&
+        !packet.dispatched_at
+      );
+    });
+  }, [filteredPackets]);
 
   /* ======================================================
      DISPATCHED
   ====================================================== */
 
   const dispatchedPackets = useMemo(() => {
-    return filteredPackets.filter(
-      (packet) => {
-        const status =
-          String(
-            packet.status || ""
-          )
-            .trim()
-            .toLowerCase();
+    return filteredPackets.filter((packet) => {
+      const status = String(
+        packet.status || ""
+      )
+        .trim()
+        .toLowerCase();
 
-        return (
-          status === "dispatched" ||
-          Boolean(
-            packet.dispatched_at
-          )
-        );
-      }
-    );
-  }, [
-    filteredPackets,
-  ]);
+      return (
+        status === "dispatched" ||
+        Boolean(packet.dispatched_at)
+      );
+    });
+  }, [filteredPackets]);
 
   /* ======================================================
      PACKET/PANEL HELPERS
   ====================================================== */
 
-  function getPacketPanelRelations(
-    packetId
-  ) {
+  function getPacketPanelRelations(packetId) {
     return packetPanels.filter(
       (relation) =>
-        String(
-          relation.packet_id
-        ) ===
+        String(relation.packet_id) ===
         String(packetId)
     );
   }
 
-  function getPacketPanelCount(
-    packetId
-  ) {
-    return getPacketPanelRelations(
-      packetId
-    ).length;
+  function getPacketPanelCount(packetId) {
+    return getPacketPanelRelations(packetId).length;
   }
 
-  function getPacketSite(
-    packet
-  ) {
+  function getPacketSite(packet) {
     if (!packet) {
       return null;
     }
@@ -619,9 +498,7 @@ function Dispatch() {
     );
   }
 
-  function getPanel(
-    panelId
-  ) {
+  function getPanel(panelId) {
     return panels.find(
       (panel) =>
         String(panel.id) ===
@@ -629,9 +506,7 @@ function Dispatch() {
     );
   }
 
-  function getPacketQR(
-    packet
-  ) {
+  function getPacketQR(packet) {
     if (!packet) {
       return "";
     }
@@ -643,9 +518,7 @@ function Dispatch() {
     );
   }
 
-  function getPanelQR(
-    panel
-  ) {
+  function getPanelQR(panel) {
     if (!panel) {
       return "";
     }
@@ -662,13 +535,9 @@ function Dispatch() {
      SELECT PACKET
   ====================================================== */
 
-  function selectPacket(
-    packet
-  ) {
+  function selectPacket(packet) {
     setSelectedPacketId(
-      packet
-        ? packet.id
-        : null
+      packet ? packet.id : null
     );
 
     setError("");
@@ -679,57 +548,35 @@ function Dispatch() {
      SELECTED PACKET
   ====================================================== */
 
-  const selectedPacket =
-    useMemo(() => {
-      if (!selectedPacketId) {
-        return null;
-      }
+  const selectedPacket = useMemo(() => {
+    if (!selectedPacketId) {
+      return null;
+    }
 
-      return (
-        filteredPackets.find(
-          (packet) =>
-            String(
-              packet.id
-            ) ===
-            String(
-              selectedPacketId
-            )
-        ) || null
-      );
-    }, [
-      filteredPackets,
-      selectedPacketId,
-    ]);
+    return (
+      filteredPackets.find(
+        (packet) =>
+          String(packet.id) ===
+          String(selectedPacketId)
+      ) || null
+    );
+  }, [
+    filteredPackets,
+    selectedPacketId,
+  ]);
 
   /* ======================================================
      SITE CHANGE
-
-     Changing the site immediately clears packet state.
   ====================================================== */
 
-  function handleSiteChange(
-    event
-  ) {
-    const newSiteId =
-      event.target.value;
+  function handleSiteChange(event) {
+    const newSiteId = event.target.value;
 
-    setSelectedSiteId(
-      newSiteId
-    );
-
-    setSelectedPacketId(
-      null
-    );
-
+    setSelectedSiteId(newSiteId);
+    setSelectedPacketId(null);
     setScanValue("");
-
     setError("");
     setMessage("");
-
-    /*
-    Scanner is only focused after a real site
-    has been selected.
-    */
 
     if (newSiteId) {
       setTimeout(() => {
@@ -742,9 +589,7 @@ function Dispatch() {
      SCAN PACKET QR
   ====================================================== */
 
-  async function handleScan(
-    event
-  ) {
+  async function handleScan(event) {
     if (
       event &&
       event.preventDefault
@@ -752,17 +597,10 @@ function Dispatch() {
       event.preventDefault();
     }
 
-    const qr =
-      scanValue.trim();
+    const qr = scanValue.trim();
 
     setError("");
     setMessage("");
-
-    /*
-    ------------------------------------------------------
-    SITE MUST BE SELECTED FIRST
-    ------------------------------------------------------
-    */
 
     if (!selectedSiteId) {
       setError(
@@ -785,22 +623,13 @@ function Dispatch() {
     setScanning(true);
 
     try {
-      /*
-      ------------------------------------------------------
-      FIND PACKET
-      ------------------------------------------------------
-      */
-
       const {
         data: packet,
         error: findError,
       } = await supabase
         .from("packets")
         .select("*")
-        .eq(
-          "packet_qr",
-          qr
-        )
+        .eq("packet_qr", qr)
         .maybeSingle();
 
       if (findError) {
@@ -813,57 +642,29 @@ function Dispatch() {
         );
       }
 
-      /*
-      ------------------------------------------------------
-      COMPANY CHECK
-
-      Packet must belong to one of the sites belonging
-      to the current company.
-      ------------------------------------------------------
-      */
+      /* COMPANY CHECK */
 
       const packetBelongsToCompany =
         sites.some(
           (site) =>
-            String(
-              site.id
-            ) ===
-            String(
-              packet.site_id
-            )
+            String(site.id) ===
+            String(packet.site_id)
         );
 
-      if (
-        !packetBelongsToCompany
-      ) {
+      if (!packetBelongsToCompany) {
         throw new Error(
           "This packet does not belong to your company."
         );
       }
 
-      /*
-      ------------------------------------------------------
-      SITE CHECK
-
-      THIS IS IMPORTANT.
-
-      Even if the packet exists, it must belong to the
-      ONE site currently selected on screen.
-      ------------------------------------------------------
-      */
+      /* SITE CHECK */
 
       if (
-        String(
-          packet.site_id
-        ) !==
-        String(
-          selectedSiteId
-        )
+        String(packet.site_id) !==
+        String(selectedSiteId)
       ) {
         const packetSite =
-          getPacketSite(
-            packet
-          );
+          getPacketSite(packet);
 
         throw new Error(
           `Wrong site. This packet belongs to ${
@@ -873,27 +674,19 @@ function Dispatch() {
         );
       }
 
-      /*
-      ------------------------------------------------------
-      ALREADY DISPATCHED
-      ------------------------------------------------------
-      */
+      /* ALREADY DISPATCHED */
 
-      const currentStatus =
-        String(
-          packet.status || ""
-        )
-          .trim()
-          .toLowerCase();
+      const currentStatus = String(
+        packet.status || ""
+      )
+        .trim()
+        .toLowerCase();
 
       if (
-        currentStatus ===
-          "dispatched" ||
+        currentStatus === "dispatched" ||
         packet.dispatched_at
       ) {
-        setSelectedPacketId(
-          packet.id
-        );
+        setSelectedPacketId(packet.id);
 
         throw new Error(
           `${getPacketQR(
@@ -902,16 +695,9 @@ function Dispatch() {
         );
       }
 
-      /*
-      ------------------------------------------------------
-      ONLY CLOSED PACKETS CAN BE DISPATCHED
-      ------------------------------------------------------
-      */
+      /* ONLY CLOSED PACKETS */
 
-      if (
-        currentStatus !==
-        "closed"
-      ) {
+      if (currentStatus !== "closed") {
         throw new Error(
           `${getPacketQR(
             packet
@@ -919,20 +705,12 @@ function Dispatch() {
         );
       }
 
-      /*
-      ------------------------------------------------------
-      DISPATCH TIME
-      ------------------------------------------------------
-      */
+      /* DISPATCH TIME */
 
       const dispatchedAt =
         new Date().toISOString();
 
-      /*
-      ------------------------------------------------------
-      UPDATE SUPABASE
-      ------------------------------------------------------
-      */
+      /* UPDATE SUPABASE */
 
       const {
         data: updatedPacket,
@@ -940,16 +718,10 @@ function Dispatch() {
       } = await supabase
         .from("packets")
         .update({
-          status:
-            "dispatched",
-
-          dispatched_at:
-            dispatchedAt,
+          status: "dispatched",
+          dispatched_at: dispatchedAt,
         })
-        .eq(
-          "id",
-          packet.id
-        )
+        .eq("id", packet.id)
         .select()
         .single();
 
@@ -957,30 +729,18 @@ function Dispatch() {
         throw updateError;
       }
 
-      /*
-      ------------------------------------------------------
-      UPDATE LOCAL STATE
-      ------------------------------------------------------
-      */
+      /* UPDATE LOCAL STATE */
 
-      setPackets(
-        (current) =>
-          current.map(
-            (item) =>
-              String(
-                item.id
-              ) ===
-              String(
-                packet.id
-              )
-                ? updatedPacket
-                : item
-          )
+      setPackets((current) =>
+        current.map((item) =>
+          String(item.id) ===
+          String(packet.id)
+            ? updatedPacket
+            : item
+        )
       );
 
-      setSelectedPacketId(
-        packet.id
-      );
+      setSelectedPacketId(packet.id);
 
       setMessage(
         `${getPacketQR(
@@ -989,12 +749,6 @@ function Dispatch() {
       );
 
       setScanValue("");
-
-      /*
-      ------------------------------------------------------
-      RETURN SCANNER TO READY STATE
-      ------------------------------------------------------
-      */
 
       setTimeout(() => {
         inputRef.current?.focus();
@@ -1018,23 +772,17 @@ function Dispatch() {
      DATE FORMAT
   ====================================================== */
 
-  function formatDate(
-    value
-  ) {
+  function formatDate(value) {
     if (!value) {
       return "-";
     }
 
     try {
-      return new Date(
-        value
-      ).toLocaleString(
+      return new Date(value).toLocaleString(
         undefined,
         {
-          dateStyle:
-            "medium",
-          timeStyle:
-            "short",
+          dateStyle: "medium",
+          timeStyle: "short",
         }
       );
     } catch {
@@ -1050,116 +798,76 @@ function Dispatch() {
     packet,
     dispatched = false,
   }) {
-    const site =
-      getPacketSite(
-        packet
-      );
-
     const panelCount =
-      getPacketPanelCount(
-        packet.id
-      );
+      getPacketPanelCount(packet.id);
 
     const packetQR =
-      getPacketQR(
-        packet
-      );
+      getPacketQR(packet);
 
     const isSelected =
-      String(
-        selectedPacketId
-      ) ===
-      String(
-        packet.id
-      );
+      String(selectedPacketId) ===
+      String(packet.id);
 
     return (
       <button
         type="button"
         onClick={() =>
-          selectPacket(
-            packet
-          )
+          selectPacket(packet)
         }
         style={{
-          width:
-            "100%",
-          textAlign:
-            "left",
-          border:
-            isSelected
-              ? "2px solid #2563eb"
-              : "1px solid #e5e7eb",
-          background:
-            "#ffffff",
-          borderRadius:
-            "12px",
-          padding:
-            "15px",
-          marginBottom:
-            "10px",
-          cursor:
-            "pointer",
-          boxSizing:
-            "border-box",
+          width: "100%",
+          textAlign: "left",
+          border: isSelected
+            ? "2px solid #2563eb"
+            : "1px solid #e5e7eb",
+          background: "#ffffff",
+          borderRadius: "9px",
+          padding: "10px 12px",
+          marginBottom: "8px",
+          cursor: "pointer",
+          boxSizing: "border-box",
         }}
       >
         <div
           style={{
-            display:
-              "flex",
-            justifyContent:
-              "space-between",
-            alignItems:
-              "center",
-            gap:
-              "12px",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "10px",
           }}
         >
-          <div>
+          <div
+            style={{
+              minWidth: 0,
+            }}
+          >
             <div
               style={{
-                fontSize:
-                  "16px",
-                fontWeight:
-                  "700",
-                color:
-                  "#111827",
+                fontSize: "14px",
+                fontWeight: "700",
+                color: "#111827",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
               }}
             >
               {packetQR}
-            </div>
-
-            <div
-              style={{
-                marginTop:
-                  "5px",
-                fontSize:
-                  "12px",
-                color:
-                  "#6b7280",
-              }}
-            >
-              {site?.site_name ||
-                packet.site_name ||
-                "Unknown site"}
             </div>
           </div>
 
           <div
             style={{
-              textAlign:
-                "right",
+              textAlign: "right",
+              flexShrink: 0,
             }}
           >
             <div
               style={{
-                fontWeight:
-                  "700",
-                color:
-                  dispatched
-                    ? "#16a34a"
-                    : "#2563eb",
+                fontWeight: "700",
+                color: dispatched
+                  ? "#16a34a"
+                  : "#2563eb",
+                fontSize: "15px",
               }}
             >
               {panelCount}
@@ -1167,10 +875,8 @@ function Dispatch() {
 
             <div
               style={{
-                fontSize:
-                  "11px",
-                color:
-                  "#6b7280",
+                fontSize: "10px",
+                color: "#6b7280",
               }}
             >
               panels
@@ -1180,50 +886,39 @@ function Dispatch() {
 
         <div
           style={{
-            marginTop:
-              "10px",
-            display:
-              "flex",
-            justifyContent:
-              "space-between",
-            alignItems:
-              "center",
+            marginTop: "7px",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "8px",
           }}
         >
           <span
             style={{
-              display:
-                "inline-block",
-              padding:
-                "4px 9px",
-              borderRadius:
-                "999px",
-              fontSize:
-                "11px",
-              fontWeight:
-                "700",
-              background:
-                dispatched
-                  ? "#dcfce7"
-                  : "#dbeafe",
-              color:
-                dispatched
-                  ? "#15803d"
-                  : "#1d4ed8",
+              display: "inline-block",
+              padding: "3px 7px",
+              borderRadius: "999px",
+              fontSize: "10px",
+              fontWeight: "700",
+              background: dispatched
+                ? "#dcfce7"
+                : "#dbeafe",
+              color: dispatched
+                ? "#15803d"
+                : "#1d4ed8",
             }}
           >
             {dispatched
               ? "DISPATCHED"
-              : "READY FOR DISPATCH"}
+              : "READY"}
           </span>
 
           {dispatched && (
             <span
               style={{
-                fontSize:
-                  "11px",
-                color:
-                  "#6b7280",
+                fontSize: "10px",
+                color: "#6b7280",
+                whiteSpace: "nowrap",
               }}
             >
               {formatDate(
@@ -1244,20 +939,15 @@ function Dispatch() {
     return (
       <div
         style={{
-          width:
-            "100%",
-          padding:
-            "60px 30px",
-          textAlign:
-            "center",
+          width: "100%",
+          padding: "60px 30px",
+          textAlign: "center",
         }}
       >
         <div
           style={{
-            fontSize:
-              "28px",
-            marginBottom:
-              "10px",
+            fontSize: "28px",
+            marginBottom: "10px",
           }}
         >
           ⟳
@@ -1269,10 +959,8 @@ function Dispatch() {
 
         <p
           style={{
-            color:
-              "#6b7280",
-            fontSize:
-              "13px",
+            color: "#6b7280",
+            fontSize: "13px",
           }}
         >
           Reading your company dispatch data.
@@ -1299,45 +987,34 @@ function Dispatch() {
   return (
     <div
       style={{
-        width:
-          "100%",
-        boxSizing:
-          "border-box",
-        padding:
-          "28px",
+        width: "100%",
+        boxSizing: "border-box",
+        padding: "20px 28px 28px",
       }}
     >
       {/* ==================================================
-          HEADER
+          COMPACT HEADER
+
+          SITE SELECTOR IS NOW BESIDE REFRESH.
       ================================================== */}
 
       <div
         style={{
-          display:
-            "flex",
-          justifyContent:
-            "space-between",
-          alignItems:
-            "flex-start",
-          gap:
-            "20px",
-          marginBottom:
-            "22px",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-end",
+          gap: "16px",
+          marginBottom: "14px",
         }}
       >
         <div>
           <div
             style={{
-              fontSize:
-                "12px",
-              fontWeight:
-                "800",
-              letterSpacing:
-                "1.5px",
-              color:
-                "#2563eb",
-              marginBottom:
-                "6px",
+              fontSize: "11px",
+              fontWeight: "800",
+              letterSpacing: "1.5px",
+              color: "#2563eb",
+              marginBottom: "4px",
             }}
           >
             TRACKERZ PRODUCTION
@@ -1345,158 +1022,51 @@ function Dispatch() {
 
           <h1
             style={{
-              margin:
-                "0",
-              fontSize:
-                "28px",
-              color:
-                "#111827",
+              margin: "0",
+              fontSize: "26px",
+              color: "#111827",
             }}
           >
             Dispatch
           </h1>
-
-          <p
-            style={{
-              margin:
-                "7px 0 0",
-              color:
-                "#6b7280",
-              fontSize:
-                "13px",
-            }}
-          >
-            Select one site before viewing or dispatching packets.
-          </p>
         </div>
 
-        <button
-          type="button"
-          onClick={
-            loadAllData
-          }
-          style={{
-            padding:
-              "9px 15px",
-            border:
-              "1px solid #9ca3af",
-            background:
-              "#ffffff",
-            borderRadius:
-              "7px",
-            cursor:
-              "pointer",
-            fontWeight:
-              "600",
-          }}
-        >
-          ↻ Refresh
-        </button>
-      </div>
+        {/* ================================================
+            SITE SELECT + REFRESH
+        ================================================ */}
 
-      {/* ==================================================
-          COMPANY
-      ================================================== */}
-
-      {companyName && (
         <div
           style={{
-            background:
-              "#eff6ff",
-            border:
-              "1px solid #bfdbfe",
-            borderRadius:
-              "10px",
-            padding:
-              "10px 14px",
-            marginBottom:
-              "18px",
-            fontSize:
-              "13px",
-            color:
-              "#1e40af",
-            fontWeight:
-              "700",
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+            flexShrink: 0,
           }}
         >
-          Company: {companyName}
-        </div>
-      )}
+          <select
+            value={selectedSiteId}
+            onChange={handleSiteChange}
+            aria-label="Select Site"
+            style={{
+              width: "280px",
+              padding: "10px 12px",
+              border: "1px solid #d1d5db",
+              borderRadius: "8px",
+              background: "#ffffff",
+              fontSize: "14px",
+              fontWeight: "600",
+              color: "#111827",
+              boxSizing: "border-box",
+            }}
+          >
+            <option value="">
+              Select Site
+            </option>
 
-      {/* ==================================================
-          SELECT SITE
-      ================================================== */}
-
-      <div
-        style={{
-          background:
-            "#ffffff",
-          border:
-            "1px solid #e5e7eb",
-          borderRadius:
-            "12px",
-          padding:
-            "18px",
-          marginBottom:
-            "18px",
-        }}
-      >
-        <label
-          style={{
-            display:
-              "block",
-            fontSize:
-              "12px",
-            fontWeight:
-              "700",
-            color:
-              "#374151",
-            marginBottom:
-              "7px",
-          }}
-        >
-          SELECT SITE
-        </label>
-
-        <select
-          value={
-            selectedSiteId
-          }
-          onChange={
-            handleSiteChange
-          }
-          style={{
-            width:
-              "100%",
-            maxWidth:
-              "500px",
-            padding:
-              "12px",
-            border:
-              "1px solid #d1d5db",
-            borderRadius:
-              "8px",
-            background:
-              "#ffffff",
-            fontSize:
-              "14px",
-          }}
-        >
-          {/* NO ALL SITES OPTION */}
-
-          <option value="">
-            Select a site
-          </option>
-
-          {sites.map(
-            (site) => (
+            {sites.map((site) => (
               <option
-                key={
-                  site.id
-                }
-                value={
-                  site.id
-                }
+                key={site.id}
+                value={site.id}
               >
                 {site.site_name ||
                   `Site ${site.id}`}
@@ -1504,43 +1074,25 @@ function Dispatch() {
                   ? ` — ${site.client_name}`
                   : ""}
               </option>
-            )
-          )}
-        </select>
+            ))}
+          </select>
 
-        {/* SELECTED SITE INFORMATION */}
-
-        {selectedSite ? (
-          <div
+          <button
+            type="button"
+            onClick={loadAllData}
             style={{
-              marginTop:
-                "10px",
-              fontSize:
-                "11px",
-              color:
-                "#2563eb",
-              fontWeight:
-                "600",
+              padding: "10px 13px",
+              border: "1px solid #9ca3af",
+              background: "#ffffff",
+              borderRadius: "8px",
+              cursor: "pointer",
+              fontWeight: "600",
+              whiteSpace: "nowrap",
             }}
           >
-            Dispatching only:
-            {" "}
-            {selectedSite.site_name}
-          </div>
-        ) : (
-          <div
-            style={{
-              marginTop:
-                "10px",
-              fontSize:
-                "11px",
-              color:
-                "#6b7280",
-            }}
-          >
-            Select a site to view its packets.
-          </div>
-        )}
+            ↻ Refresh
+          </button>
+        </div>
       </div>
 
       {/* ==================================================
@@ -1550,22 +1102,14 @@ function Dispatch() {
       {message && (
         <div
           style={{
-            background:
-              "#ecfdf5",
-            border:
-              "1px solid #86efac",
-            color:
-              "#166534",
-            borderRadius:
-              "8px",
-            padding:
-              "11px 14px",
-            marginBottom:
-              "12px",
-            fontSize:
-              "13px",
-            fontWeight:
-              "600",
+            background: "#ecfdf5",
+            border: "1px solid #86efac",
+            color: "#166534",
+            borderRadius: "8px",
+            padding: "9px 12px",
+            marginBottom: "10px",
+            fontSize: "13px",
+            fontWeight: "600",
           }}
         >
           ✓ {message}
@@ -1575,22 +1119,14 @@ function Dispatch() {
       {error && (
         <div
           style={{
-            background:
-              "#fef2f2",
-            border:
-              "1px solid #fca5a5",
-            color:
-              "#b91c1c",
-            borderRadius:
-              "8px",
-            padding:
-              "11px 14px",
-            marginBottom:
-              "12px",
-            fontSize:
-              "13px",
-            fontWeight:
-              "600",
+            background: "#fef2f2",
+            border: "1px solid #fca5a5",
+            color: "#b91c1c",
+            borderRadius: "8px",
+            padding: "9px 12px",
+            marginBottom: "10px",
+            fontSize: "13px",
+            fontWeight: "600",
           }}
         >
           {error}
@@ -1599,63 +1135,64 @@ function Dispatch() {
 
       {/* ==================================================
           SCANNER
-          
-          ONLY ACTIVE AFTER SITE SELECTION
+
+          MOVED UP DIRECTLY BELOW HEADER.
       ================================================== */}
 
       <div
         style={{
-          background:
-            "#ffffff",
-          border:
-            "1px solid #e5e7eb",
-          borderRadius:
-            "12px",
-          padding:
-            "18px",
-          marginBottom:
-            "18px",
+          background: "#ffffff",
+          border: "1px solid #e5e7eb",
+          borderRadius: "10px",
+          padding: "12px",
+          marginBottom: "14px",
         }}
       >
         <div
           style={{
-            fontSize:
-              "15px",
-            fontWeight:
-              "700",
-            color:
-              "#111827",
-            marginBottom:
-              "9px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "10px",
+            marginBottom: "7px",
           }}
         >
-          Scan Packet QR
+          <div
+            style={{
+              fontSize: "14px",
+              fontWeight: "700",
+              color: "#111827",
+            }}
+          >
+            Scan Packet QR
+          </div>
+
+          {selectedSite && (
+            <div
+              style={{
+                fontSize: "11px",
+                fontWeight: "600",
+                color: "#2563eb",
+              }}
+            >
+              {selectedSite.site_name}
+            </div>
+          )}
         </div>
 
         <form
-          onSubmit={
-            handleScan
-          }
+          onSubmit={handleScan}
           style={{
-            display:
-              "flex",
-            gap:
-              "10px",
+            display: "flex",
+            gap: "8px",
           }}
         >
           <input
-            ref={
-              inputRef
-            }
-            value={
-              scanValue
-            }
-            onChange={(
-              event
-            ) =>
+            ref={inputRef}
+            value={scanValue}
+            onChange={(event) =>
               setScanValue(
-                event.target
-                  .value
+                event.target.value
               )
             }
             placeholder={
@@ -1669,24 +1206,19 @@ function Dispatch() {
               scanning
             }
             style={{
-              flex:
-                "1",
-              minWidth:
-                "0",
-              padding:
-                "13px",
+              flex: "1",
+              minWidth: "0",
+              padding: "10px 12px",
               border:
                 "1px solid #2563eb",
-              borderRadius:
-                "8px",
-              outline:
-                "none",
-              fontSize:
-                "14px",
+              borderRadius: "8px",
+              outline: "none",
+              fontSize: "14px",
               background:
                 !selectedSiteId
                   ? "#f3f4f6"
                   : "#ffffff",
+              boxSizing: "border-box",
             }}
           />
 
@@ -1697,26 +1229,22 @@ function Dispatch() {
               scanning
             }
             style={{
-              padding:
-                "0 24px",
-              border:
-                "none",
-              borderRadius:
-                "8px",
+              padding: "0 20px",
+              border: "none",
+              borderRadius: "8px",
               background:
                 !selectedSiteId ||
                 scanning
                   ? "#93c5fd"
                   : "#2563eb",
-              color:
-                "#ffffff",
-              fontWeight:
-                "700",
+              color: "#ffffff",
+              fontWeight: "700",
               cursor:
                 !selectedSiteId ||
                 scanning
                   ? "default"
                   : "pointer",
+              minWidth: "78px",
             }}
           >
             {scanning
@@ -1724,57 +1252,27 @@ function Dispatch() {
               : "Scan"}
           </button>
         </form>
-
-        <div
-          style={{
-            marginTop:
-              "8px",
-            fontSize:
-              "11px",
-            color:
-              "#6b7280",
-          }}
-        >
-          {!selectedSiteId
-            ? "Select a site before scanning a packet."
-            : `Only ${selectedSite?.site_name || "the selected site"} packets can be dispatched.`}
-        </div>
       </div>
 
       {/* ==================================================
           PACKET LISTS
-          
-          IMPORTANT:
-          When selectedSiteId is empty, this entire
-          section is NOT displayed.
-
-          Therefore the factory user sees ZERO packets
-          before choosing a site.
       ================================================== */}
 
       {!selectedSiteId ? (
         <div
           style={{
-            background:
-              "#ffffff",
-            border:
-              "1px solid #e5e7eb",
-            borderRadius:
-              "12px",
-            padding:
-              "55px 20px",
-            textAlign:
-              "center",
-            color:
-              "#6b7280",
+            background: "#ffffff",
+            border: "1px solid #e5e7eb",
+            borderRadius: "10px",
+            padding: "45px 20px",
+            textAlign: "center",
+            color: "#6b7280",
           }}
         >
           <div
             style={{
-              fontSize:
-                "38px",
-              marginBottom:
-                "12px",
+              fontSize: "32px",
+              marginBottom: "8px",
             }}
           >
             ▤
@@ -1782,12 +1280,9 @@ function Dispatch() {
 
           <h2
             style={{
-              margin:
-                "0 0 8px",
-              color:
-                "#374151",
-              fontSize:
-                "20px",
+              margin: "0 0 6px",
+              color: "#374151",
+              fontSize: "18px",
             }}
           >
             Select a site
@@ -1795,27 +1290,23 @@ function Dispatch() {
 
           <p
             style={{
-              margin:
-                "0",
-              fontSize:
-                "13px",
+              margin: "0",
+              fontSize: "12px",
             }}
           >
-            Ready for Dispatch and Dispatched packets
-            will appear after you select one site.
+            Ready for Dispatch and Dispatched
+            packets will appear after you select
+            one site.
           </p>
         </div>
       ) : (
         <div
           style={{
-            display:
-              "grid",
+            display: "grid",
             gridTemplateColumns:
-              "1fr 1fr",
-            gap:
-              "18px",
-            alignItems:
-              "start",
+              "repeat(2, minmax(0, 1fr))",
+            gap: "14px",
+            alignItems: "start",
           }}
         >
           {/* ==============================================
@@ -1824,39 +1315,27 @@ function Dispatch() {
 
           <div
             style={{
-              background:
-                "#ffffff",
-              border:
-                "1px solid #e5e7eb",
-              borderRadius:
-                "12px",
-              padding:
-                "18px",
-              minHeight:
-                "300px",
+              background: "#ffffff",
+              border: "1px solid #e5e7eb",
+              borderRadius: "10px",
+              padding: "14px",
+              minWidth: "0",
             }}
           >
             <div
               style={{
-                display:
-                  "flex",
-                justifyContent:
-                  "space-between",
-                alignItems:
-                  "center",
-                marginBottom:
-                  "14px",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: "10px",
               }}
             >
               <div>
                 <h2
                   style={{
-                    margin:
-                      "0",
-                    fontSize:
-                      "18px",
-                    color:
-                      "#111827",
+                    margin: "0",
+                    fontSize: "17px",
+                    color: "#111827",
                   }}
                 >
                   Ready for Dispatch
@@ -1864,12 +1343,9 @@ function Dispatch() {
 
                 <div
                   style={{
-                    marginTop:
-                      "4px",
-                    fontSize:
-                      "12px",
-                    color:
-                      "#6b7280",
+                    marginTop: "3px",
+                    fontSize: "11px",
+                    color: "#6b7280",
                   }}
                 >
                   {selectedSite?.site_name}
@@ -1878,36 +1354,25 @@ function Dispatch() {
 
               <div
                 style={{
-                  fontSize:
-                    "22px",
-                  fontWeight:
-                    "800",
-                  color:
-                    "#2563eb",
+                  fontSize: "22px",
+                  fontWeight: "800",
+                  color: "#2563eb",
                 }}
               >
-                {
-                  readyPackets.length
-                }
+                {readyPackets.length}
               </div>
             </div>
 
-            {readyPackets.length ===
-            0 ? (
+            {readyPackets.length === 0 ? (
               <div
                 style={{
-                  padding:
-                    "35px 15px",
-                  textAlign:
-                    "center",
-                  color:
-                    "#9ca3af",
-                  fontSize:
-                    "13px",
+                  padding: "28px 12px",
+                  textAlign: "center",
+                  color: "#9ca3af",
+                  fontSize: "12px",
                   border:
                     "1px dashed #d1d5db",
-                  borderRadius:
-                    "9px",
+                  borderRadius: "8px",
                 }}
               >
                 No packets ready for dispatch
@@ -1916,23 +1381,16 @@ function Dispatch() {
             ) : (
               <div
                 style={{
-                  maxHeight:
-                    "500px",
-                  overflowY:
-                    "auto",
-                  paddingRight:
-                    "3px",
+                  maxHeight: "390px",
+                  overflowY: "auto",
+                  paddingRight: "2px",
                 }}
               >
                 {readyPackets.map(
                   (packet) => (
                     <PacketCard
-                      key={
-                        packet.id
-                      }
-                      packet={
-                        packet
-                      }
+                      key={packet.id}
+                      packet={packet}
                     />
                   )
                 )}
@@ -1946,39 +1404,27 @@ function Dispatch() {
 
           <div
             style={{
-              background:
-                "#ffffff",
-              border:
-                "1px solid #e5e7eb",
-              borderRadius:
-                "12px",
-              padding:
-                "18px",
-              minHeight:
-                "300px",
+              background: "#ffffff",
+              border: "1px solid #e5e7eb",
+              borderRadius: "10px",
+              padding: "14px",
+              minWidth: "0",
             }}
           >
             <div
               style={{
-                display:
-                  "flex",
-                justifyContent:
-                  "space-between",
-                alignItems:
-                  "center",
-                marginBottom:
-                  "14px",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: "10px",
               }}
             >
               <div>
                 <h2
                   style={{
-                    margin:
-                      "0",
-                    fontSize:
-                      "18px",
-                    color:
-                      "#111827",
+                    margin: "0",
+                    fontSize: "17px",
+                    color: "#111827",
                   }}
                 >
                   Dispatched
@@ -1986,12 +1432,9 @@ function Dispatch() {
 
                 <div
                   style={{
-                    marginTop:
-                      "4px",
-                    fontSize:
-                      "12px",
-                    color:
-                      "#6b7280",
+                    marginTop: "3px",
+                    fontSize: "11px",
+                    color: "#6b7280",
                   }}
                 >
                   {selectedSite?.site_name}
@@ -2000,36 +1443,25 @@ function Dispatch() {
 
               <div
                 style={{
-                  fontSize:
-                    "22px",
-                  fontWeight:
-                    "800",
-                  color:
-                    "#16a34a",
+                  fontSize: "22px",
+                  fontWeight: "800",
+                  color: "#16a34a",
                 }}
               >
-                {
-                  dispatchedPackets.length
-                }
+                {dispatchedPackets.length}
               </div>
             </div>
 
-            {dispatchedPackets.length ===
-            0 ? (
+            {dispatchedPackets.length === 0 ? (
               <div
                 style={{
-                  padding:
-                    "35px 15px",
-                  textAlign:
-                    "center",
-                  color:
-                    "#9ca3af",
-                  fontSize:
-                    "13px",
+                  padding: "28px 12px",
+                  textAlign: "center",
+                  color: "#9ca3af",
+                  fontSize: "12px",
                   border:
                     "1px dashed #d1d5db",
-                  borderRadius:
-                    "9px",
+                  borderRadius: "8px",
                 }}
               >
                 No dispatched packets
@@ -2038,23 +1470,16 @@ function Dispatch() {
             ) : (
               <div
                 style={{
-                  maxHeight:
-                    "500px",
-                  overflowY:
-                    "auto",
-                  paddingRight:
-                    "3px",
+                  maxHeight: "390px",
+                  overflowY: "auto",
+                  paddingRight: "2px",
                 }}
               >
                 {dispatchedPackets.map(
                   (packet) => (
                     <PacketCard
-                      key={
-                        packet.id
-                      }
-                      packet={
-                        packet
-                      }
+                      key={packet.id}
+                      packet={packet}
                       dispatched
                     />
                   )
@@ -2067,52 +1492,37 @@ function Dispatch() {
 
       {/* ==================================================
           SELECTED PACKET DETAILS
-          
-          Only available after a packet from the selected
-          site has been clicked.
+
+          Existing functionality retained.
       ================================================== */}
 
       {selectedPacket &&
         selectedSiteId && (
           <div
             style={{
-              marginTop:
-                "18px",
-              background:
-                "#ffffff",
-              border:
-                "1px solid #e5e7eb",
-              borderRadius:
-                "12px",
-              padding:
-                "20px",
+              marginTop: "14px",
+              background: "#ffffff",
+              border: "1px solid #e5e7eb",
+              borderRadius: "10px",
+              padding: "16px",
             }}
           >
             <div
               style={{
-                display:
-                  "flex",
-                justifyContent:
-                  "space-between",
-                alignItems:
-                  "flex-start",
-                gap:
-                  "20px",
-                marginBottom:
-                  "15px",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                gap: "20px",
+                marginBottom: "12px",
               }}
             >
               <div>
                 <div
                   style={{
-                    fontSize:
-                      "11px",
-                    fontWeight:
-                      "700",
-                    color:
-                      "#6b7280",
-                    marginBottom:
-                      "5px",
+                    fontSize: "10px",
+                    fontWeight: "700",
+                    color: "#6b7280",
+                    marginBottom: "4px",
                   }}
                 >
                   PACKET DETAILS
@@ -2120,12 +1530,9 @@ function Dispatch() {
 
                 <h2
                   style={{
-                    margin:
-                      "0",
-                    fontSize:
-                      "21px",
-                    color:
-                      "#111827",
+                    margin: "0",
+                    fontSize: "19px",
+                    color: "#111827",
                   }}
                 >
                   {getPacketQR(
@@ -2135,47 +1542,23 @@ function Dispatch() {
 
                 <div
                   style={{
-                    marginTop:
-                      "6px",
-                    fontSize:
-                      "13px",
-                    color:
-                      "#6b7280",
+                    marginTop: "4px",
+                    fontSize: "12px",
+                    color: "#6b7280",
                   }}
                 >
-                  {
-                    selectedSite?.site_name
-                  }
+                  {selectedSite?.site_name}
                 </div>
-
-                {companyName && (
-                  <div
-                    style={{
-                      marginTop:
-                        "4px",
-                      fontSize:
-                        "11px",
-                      color:
-                        "#2563eb",
-                      fontWeight:
-                        "700",
-                    }}
-                  >
-                    {companyName}
-                  </div>
-                )}
               </div>
 
               <div
                 style={{
-                  textAlign:
-                    "right",
+                  textAlign: "right",
                 }}
               >
                 <div
                   style={{
-                    fontWeight:
-                      "700",
+                    fontWeight: "700",
                     color:
                       String(
                         selectedPacket.status ||
@@ -2195,12 +1578,9 @@ function Dispatch() {
                 {selectedPacket.dispatched_at && (
                   <div
                     style={{
-                      marginTop:
-                        "5px",
-                      fontSize:
-                        "11px",
-                      color:
-                        "#6b7280",
+                      marginTop: "4px",
+                      fontSize: "10px",
+                      color: "#6b7280",
                     }}
                   >
                     {formatDate(
@@ -2215,24 +1595,19 @@ function Dispatch() {
               style={{
                 borderTop:
                   "1px solid #e5e7eb",
-                paddingTop:
-                  "15px",
+                paddingTop: "12px",
               }}
             >
               <div
                 style={{
-                  fontWeight:
-                    "700",
-                  marginBottom:
-                    "10px",
-                  color:
-                    "#111827",
+                  fontWeight: "700",
+                  marginBottom: "8px",
+                  color: "#111827",
+                  fontSize: "13px",
                 }}
               >
                 Panels inside packet (
-                {
-                  selectedRelations.length
-                }
+                {selectedRelations.length}
                 )
               </div>
 
@@ -2240,10 +1615,8 @@ function Dispatch() {
               0 ? (
                 <div
                   style={{
-                    color:
-                      "#9ca3af",
-                    fontSize:
-                      "13px",
+                    color: "#9ca3af",
+                    fontSize: "12px",
                   }}
                 >
                   No panel relationships found.
@@ -2251,12 +1624,10 @@ function Dispatch() {
               ) : (
                 <div
                   style={{
-                    display:
-                      "grid",
+                    display: "grid",
                     gridTemplateColumns:
-                      "repeat(auto-fill, minmax(220px, 1fr))",
-                    gap:
-                      "8px",
+                      "repeat(auto-fill, minmax(190px, 1fr))",
+                    gap: "7px",
                   }}
                 >
                   {selectedRelations.map(
@@ -2288,9 +1659,9 @@ function Dispatch() {
                             border:
                               "1px solid #e5e7eb",
                             borderRadius:
-                              "8px",
+                              "7px",
                             padding:
-                              "10px",
+                              "8px",
                             background:
                               "#f9fafb",
                           }}
@@ -2300,7 +1671,7 @@ function Dispatch() {
                               fontWeight:
                                 "700",
                               fontSize:
-                                "13px",
+                                "12px",
                               color:
                                 "#111827",
                             }}
@@ -2312,9 +1683,9 @@ function Dispatch() {
                             <div
                               style={{
                                 marginTop:
-                                  "4px",
+                                  "3px",
                                 fontSize:
-                                  "11px",
+                                  "10px",
                                 color:
                                   "#6b7280",
                               }}

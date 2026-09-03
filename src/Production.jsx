@@ -10,36 +10,22 @@ function Production() {
   const [panels, setPanels] = useState([]);
 
   // Packet master records and panel-to-packet relationships.
-  // These are read through the same authenticated Supabase client,
-  // so existing RLS/company separation remains in force.
+  // These are read only for the report.
   const [packets, setPackets] = useState([]);
   const [packetPanels, setPacketPanels] = useState([]);
 
-  const [selectedSiteId, setSelectedSiteId] =
-    useState("");
+  const [selectedSiteId, setSelectedSiteId] = useState("");
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   // =========================================================
-  // LOAD SITES + PANELS + PACKETS + PACKET/PANEL RELATIONS
-  // FROM SUPABASE
-  //
-  // IMPORTANT:
-  // - No database structure changes.
-  // - No service-role key.
-  // - Uses the existing authenticated Supabase client.
-  // - Existing RLS/company separation continues to control
-  //   which rows this user can read.
+  // LOAD SITES + PANELS + PACKETS + RELATIONSHIPS
   // =========================================================
 
   const loadData = async () => {
     try {
       setError("");
-
-      // -----------------------------------------------------
-      // LOAD SITES
-      // -----------------------------------------------------
 
       const {
         data: sitesData,
@@ -52,17 +38,8 @@ function Production() {
         });
 
       if (sitesError) {
-        console.error(
-          "Production - sites error:",
-          sitesError
-        );
-
         throw sitesError;
       }
-
-      // -----------------------------------------------------
-      // LOAD PANELS
-      // -----------------------------------------------------
 
       const {
         data: panelsData,
@@ -75,27 +52,8 @@ function Production() {
         });
 
       if (panelsError) {
-        console.error(
-          "Production - panels error:",
-          panelsError
-        );
-
         throw panelsError;
       }
-
-      // -----------------------------------------------------
-      // LOAD PACKETS
-      //
-      // Existing packet structure used by QR Tracking:
-      // id
-      // site_id
-      // site_name
-      // packet_code
-      // packet_qr (if present)
-      // status
-      // opened_at
-      // closed_at
-      // -----------------------------------------------------
 
       const {
         data: packetsData,
@@ -108,25 +66,8 @@ function Production() {
         });
 
       if (packetsError) {
-        console.error(
-          "Production - packets error:",
-          packetsError
-        );
-
         throw packetsError;
       }
-
-      // -----------------------------------------------------
-      // LOAD PACKET/PANEL RELATIONSHIPS
-      //
-      // Existing relationship:
-      // packet_panels.packet_id -> packets.id
-      // packet_panels.panel_id  -> panels.id
-      //
-      // QR Tracking creates these rows when a panel is added
-      // to a packet. We use the same relationship here rather
-      // than expecting a packet_number column on panels.
-      // -----------------------------------------------------
 
       const {
         data: packetPanelsData,
@@ -139,17 +80,8 @@ function Production() {
         });
 
       if (packetPanelsError) {
-        console.error(
-          "Production - packet_panels error:",
-          packetPanelsError
-        );
-
         throw packetPanelsError;
       }
-
-      // -----------------------------------------------------
-      // SAFE ARRAYS
-      // -----------------------------------------------------
 
       const safeSites = Array.isArray(sitesData)
         ? sitesData
@@ -169,35 +101,12 @@ function Production() {
         ? packetPanelsData
         : [];
 
-      console.log(
-        "TRACKERZ PRODUCTION - SUPABASE SITES:",
-        safeSites
-      );
-
-      console.log(
-        "TRACKERZ PRODUCTION - SUPABASE PANELS:",
-        safePanels
-      );
-
-      console.log(
-        "TRACKERZ PRODUCTION - SUPABASE PACKETS:",
-        safePackets
-      );
-
-      console.log(
-        "TRACKERZ PRODUCTION - SUPABASE PACKET/PANEL RELATIONS:",
-        safePacketPanels
-      );
-
       setSites(safeSites);
       setPanels(safePanels);
       setPackets(safePackets);
       setPacketPanels(safePacketPanels);
 
-      // -----------------------------------------------------
-      // KEEP CURRENT SITE IF IT STILL EXISTS
-      // -----------------------------------------------------
-
+      // Keep the currently selected site if it still exists.
       if (selectedSiteId) {
         const currentSiteExists =
           safeSites.some(
@@ -211,10 +120,7 @@ function Production() {
         }
       }
 
-      // -----------------------------------------------------
-      // AUTOMATICALLY SELECT FIRST SITE
-      // -----------------------------------------------------
-
+      // Automatically select the first available site.
       if (
         !selectedSiteId &&
         safeSites.length > 0
@@ -317,14 +223,9 @@ function Production() {
       .toLowerCase();
   };
 
-  // =========================================================
-  // CHECK PACKED STATUS
-  // =========================================================
-
   const isPacked = (panel) => {
-    const status = getPanelStatus(
-      panel
-    );
+    const status =
+      getPanelStatus(panel);
 
     return (
       panel?.packed === true ||
@@ -337,10 +238,6 @@ function Production() {
     );
   };
 
-  // =========================================================
-  // SITE NAME
-  // =========================================================
-
   const getSiteName = (site) => {
     return (
       site?.site_name ||
@@ -349,10 +246,6 @@ function Production() {
       "Unnamed Site"
     );
   };
-
-  // =========================================================
-  // CLIENT NAME
-  // =========================================================
 
   const getClientName = (site) => {
     return (
@@ -363,19 +256,11 @@ function Production() {
     );
   };
 
-  // =========================================================
-  // GET SITE ID
-  // =========================================================
-
   const getSiteId = (site) => {
     return String(
       site?.id || ""
     );
   };
-
-  // =========================================================
-  // GET PANEL SITE ID
-  // =========================================================
 
   const getPanelSiteId = (panel) => {
     return String(
@@ -384,10 +269,6 @@ function Production() {
         ""
     );
   };
-
-  // =========================================================
-  // GET PANEL SITE NAME
-  // =========================================================
 
   const getPanelSiteName = (panel) => {
     return String(
@@ -408,13 +289,13 @@ function Production() {
       return [];
     }
 
-    const siteId = getSiteId(site);
+    const siteId =
+      getSiteId(site);
 
-    const siteName = getSiteName(
-      site
-    )
-      .trim()
-      .toLowerCase();
+    const siteName =
+      getSiteName(site)
+        .trim()
+        .toLowerCase();
 
     return panels.filter(
       (panel) => {
@@ -424,10 +305,7 @@ function Production() {
         const panelSiteName =
           getPanelSiteName(panel);
 
-        // ---------------------------------------------------
-        // PRIMARY MATCH = SITE ID
-        // ---------------------------------------------------
-
+        // Primary match = site ID.
         if (
           panelSiteId &&
           panelSiteId === siteId
@@ -435,10 +313,7 @@ function Production() {
           return true;
         }
 
-        // ---------------------------------------------------
-        // FALLBACK = SITE NAME
-        // ---------------------------------------------------
-
+        // Fallback = site name for older data.
         if (
           !panelSiteId &&
           panelSiteName &&
@@ -503,10 +378,12 @@ function Production() {
   }, [sitePanels]);
 
   // =========================================================
-  // GET PACKET NUMBER / CODE FROM A PACKET RECORD
+  // GET PACKET NUMBER / CODE
   // =========================================================
 
-  const getPacketNumber = (packet) => {
+  const getPacketNumber = (
+    packet
+  ) => {
     if (!packet) {
       return "Not Assigned";
     }
@@ -524,24 +401,23 @@ function Production() {
   };
 
   // =========================================================
-  // GET PACKET RELATION FOR A PANEL
+  // GET PACKET RELATION FOR PANEL
   //
-  // IMPORTANT:
-  // Do NOT read packet_number from panels.
-  //
-  // The actual relationship is:
   // panels.id
   //   -> packet_panels.panel_id
   //   -> packet_panels.packet_id
   //   -> packets.id
   // =========================================================
 
-  const getPacketForPanel = (panel) => {
+  const getPacketForPanel = (
+    panel
+  ) => {
     if (!panel) {
       return null;
     }
 
-    const panelId = panel?.id;
+    const panelId =
+      panel?.id;
 
     if (
       panelId === null ||
@@ -550,20 +426,22 @@ function Production() {
       return null;
     }
 
-    const relations = packetPanels.filter(
-      (relation) =>
-        String(relation?.panel_id) ===
-        String(panelId)
-    );
+    const relations =
+      packetPanels.filter(
+        (relation) =>
+          String(
+            relation?.panel_id
+          ) ===
+          String(panelId)
+      );
 
-    if (relations.length === 0) {
+    if (
+      relations.length === 0
+    ) {
       return null;
     }
 
-    // In normal Trackerz operation there should be one
-    // relationship because removing a panel from a packet
-    // removes the packet_panels row. If duplicates ever exist,
-    // prefer the latest relationship row.
+    // Prefer the latest relationship if duplicates exist.
     const relation =
       [...relations].sort(
         (a, b) =>
@@ -575,26 +453,32 @@ function Production() {
       packets.find(
         (packet) =>
           String(packet?.id) ===
-          String(relation?.packet_id)
+          String(
+            relation?.packet_id
+          )
       ) || null
     );
   };
 
   // =========================================================
-  // GET PACKET DISPLAY VALUE FOR A PANEL
+  // GET PACKET DISPLAY VALUE
   // =========================================================
 
-  const getPanelPacketNumber = (panel) => {
+  const getPanelPacketNumber = (
+    panel
+  ) => {
     const packet =
-      getPacketForPanel(panel);
+      getPacketForPanel(
+        panel
+      );
 
     if (packet) {
-      return getPacketNumber(packet);
+      return getPacketNumber(
+        packet
+      );
     }
 
-    // Keep compatibility with any legacy panel-level packet
-    // field, but ONLY as a fallback. The current source of
-    // truth is packet_panels -> packets.
+    // Legacy fallback.
     return (
       panel?.packet_number ||
       panel?.packetNumber ||
@@ -605,7 +489,11 @@ function Production() {
   };
 
   // =========================================================
-  // GROUP PACKED PANELS BY ACTUAL PACKET
+  // PACKET GROUPS
+  //
+  // Used for the report Excel and packet count only.
+  // Individual packet download buttons are intentionally
+  // removed from the UI.
   // =========================================================
 
   const packetGroups = useMemo(() => {
@@ -685,7 +573,10 @@ function Production() {
   };
 
   // =========================================================
-  // DOWNLOAD EXCEL
+  // COMPLETE EXCEL EXPORT
+  //
+  // This remains the main report download.
+  // No individual packet Excel files are created.
   // =========================================================
 
   const downloadExcel = () => {
@@ -709,10 +600,6 @@ function Production() {
 
     const rows = [];
 
-    // -------------------------------------------------------
-    // HEADER
-    // -------------------------------------------------------
-
     rows.push([
       "Site",
       "Client",
@@ -730,14 +617,11 @@ function Production() {
       "Status",
     ]);
 
-    // -------------------------------------------------------
-    // DATA
-    // -------------------------------------------------------
-
     packetGroups.forEach(
       ({
         packet,
-        panels: packetPanels,
+        panels:
+          packetPanels,
       }) => {
         packetPanels.forEach(
           (panel) => {
@@ -833,10 +717,6 @@ function Production() {
       }
     );
 
-    // -------------------------------------------------------
-    // ESCAPE HTML
-    // -------------------------------------------------------
-
     const escapeHtml = (
       text
     ) => {
@@ -864,10 +744,6 @@ function Production() {
           "&#039;"
         );
     };
-
-    // -------------------------------------------------------
-    // CREATE HTML TABLE
-    // -------------------------------------------------------
 
     let table = `
       <html>
@@ -931,10 +807,6 @@ function Production() {
       </html>
     `;
 
-    // -------------------------------------------------------
-    // DOWNLOAD
-    // -------------------------------------------------------
-
     const blob =
       new Blob(
         [table],
@@ -988,249 +860,6 @@ function Production() {
   };
 
   // =========================================================
-  // DOWNLOAD PACKET EXCEL
-  // =========================================================
-
-  const downloadPacketExcel = (
-    packet,
-    packetPanels
-  ) => {
-    if (!selectedSite) {
-      return;
-    }
-
-    const rows = [];
-
-    rows.push([
-      "Site",
-      "Client",
-      "Packet",
-      "Panel QR",
-      "Panel ID",
-      "Panel Name",
-      "Material",
-      "Thickness",
-      "Length",
-      "Width",
-      "Quantity",
-      "Status",
-    ]);
-
-    packetPanels.forEach(
-      (panel) => {
-        rows.push([
-          getSiteName(
-            selectedSite
-          ),
-
-          getClientName(
-            selectedSite
-          ),
-
-          packet,
-
-          value(panel, [
-            "qr_data",
-            "qrData",
-            "qr_code",
-            "qrCode",
-            "qr",
-            "panel_qr",
-            "panelQR",
-            "code",
-          ]),
-
-          value(panel, [
-            "panel_name",
-            "panelName",
-            "panel_id",
-            "panelId",
-            "id",
-          ]),
-
-          value(panel, [
-            "panel_name",
-            "panelName",
-            "description",
-            "name",
-            "partName",
-          ]),
-
-          value(panel, [
-            "material",
-            "material_name",
-            "materialName",
-          ]),
-
-          value(panel, [
-            "thickness",
-            "thickness_mm",
-            "thicknessMm",
-            "thicknessMM",
-          ]),
-
-          value(panel, [
-            "length",
-            "length_mm",
-            "lengthMm",
-            "lengthMM",
-          ]),
-
-          value(panel, [
-            "width",
-            "width_mm",
-            "widthMm",
-            "widthMM",
-          ]),
-
-          value(panel, [
-            "quantity",
-            "qty",
-          ]) || 1,
-
-          getPanelStatus(
-            panel
-          ) || "Packed",
-        ]);
-      }
-    );
-
-    // -------------------------------------------------------
-    // ESCAPE
-    // -------------------------------------------------------
-
-    const escapeHtml = (
-      text
-    ) => {
-      return String(
-        text ?? ""
-      )
-        .replace(
-          /&/g,
-          "&amp;"
-        )
-        .replace(
-          /</g,
-          "&lt;"
-        )
-        .replace(
-          />/g,
-          "&gt;"
-        )
-        .replace(
-          /"/g,
-          "&quot;"
-        )
-        .replace(
-          /'/g,
-          "&#039;"
-        );
-    };
-
-    // -------------------------------------------------------
-    // TABLE
-    // -------------------------------------------------------
-
-    let table = `
-      <html>
-      <head>
-        <meta charset="UTF-8" />
-      </head>
-
-      <body>
-        <table border="1">
-    `;
-
-    rows.forEach(
-      (
-        row,
-        index
-      ) => {
-        table += "<tr>";
-
-        row.forEach(
-          (cell) => {
-            table +=
-              index === 0
-                ? `<th>${escapeHtml(
-                    cell
-                  )}</th>`
-                : `<td>${escapeHtml(
-                    cell
-                  )}</td>`;
-          }
-        );
-
-        table += "</tr>";
-      }
-    );
-
-    table += `
-        </table>
-      </body>
-      </html>
-    `;
-
-    // -------------------------------------------------------
-    // DOWNLOAD
-    // -------------------------------------------------------
-
-    const blob =
-      new Blob(
-        [table],
-        {
-          type:
-            "application/vnd.ms-excel",
-        }
-      );
-
-    const url =
-      window.URL.createObjectURL(
-        blob
-      );
-
-    const link =
-      document.createElement(
-        "a"
-      );
-
-    link.href = url;
-
-    const safeSiteName =
-      getSiteName(
-        selectedSite
-      ).replace(
-        /[^a-z0-9]/gi,
-        "_"
-      );
-
-    const safePacket =
-      String(
-        packet
-      ).replace(
-        /[^a-z0-9]/gi,
-        "_"
-      );
-
-    link.download =
-      `${safeSiteName}_Packet_${safePacket}.xls`;
-
-    document.body.appendChild(
-      link
-    );
-
-    link.click();
-
-    document.body.removeChild(
-      link
-    );
-
-    window.URL.revokeObjectURL(
-      url
-    );
-  };
-
-  // =========================================================
   // LOADING SCREEN
   // =========================================================
 
@@ -1240,14 +869,17 @@ function Production() {
         style={{
           width: "100%",
           padding: "50px",
-          boxSizing: "border-box",
-          textAlign: "center",
+          boxSizing:
+            "border-box",
+          textAlign:
+            "center",
         }}
       >
         <div
           style={{
             fontSize: "30px",
-            marginBottom: "10px",
+            marginBottom:
+              "10px",
           }}
         >
           ⟳
@@ -1259,8 +891,10 @@ function Production() {
 
         <p
           style={{
-            color: "#6b7280",
-            fontSize: "13px",
+            color:
+              "#6b7280",
+            fontSize:
+              "13px",
           }}
         >
           Reading sites and panels
@@ -1282,9 +916,17 @@ function Production() {
     >
       {/* =====================================================
           HEADER
+          SELECT SITE IS NOW TOP RIGHT
       ===================================================== */}
 
-      <header className="topbar">
+      <header
+        className="topbar"
+        style={{
+          alignItems:
+            "flex-end",
+          gap: "20px",
+        }}
+      >
         <div>
           <p className="eyebrow">
             TRACKERZ PRODUCTION
@@ -1295,65 +937,31 @@ function Production() {
           </h2>
 
           <p className="subtitle">
-            Export packed panel data by
-            site and packet.
+            Export complete packed panel data for the selected site.
           </p>
         </div>
-      </header>
-
-      {/* =====================================================
-          SUPABASE ERROR
-      ===================================================== */}
-
-      {error && (
-        <div
-          style={{
-            marginBottom: "12px",
-            padding: "12px 15px",
-            background: "#fef2f2",
-            border:
-              "1px solid #fecaca",
-            color: "#b91c1c",
-            borderRadius: "8px",
-            fontSize: "13px",
-            fontWeight: "600",
-          }}
-        >
-          Production data error:{" "}
-          {error}
-        </div>
-      )}
-
-      {/* =====================================================
-          MAIN PANEL
-      ===================================================== */}
-
-      <section
-        className="panel"
-        style={{
-          width: "100%",
-          boxSizing:
-            "border-box",
-        }}
-      >
-        {/* ===================================================
-            SITE SELECTOR
-        =================================================== */}
 
         <div
           style={{
-            padding: "22px",
-            borderBottom:
-              "1px solid #e5e7eb",
+            width:
+              "min(360px, 100%)",
+            flexShrink: 0,
           }}
         >
           <label
             style={{
-              display: "block",
-              fontSize: "13px",
-              fontWeight: "700",
-              color: "#374151",
-              marginBottom: "8px",
+              display:
+                "block",
+              fontSize:
+                "11px",
+              fontWeight:
+                "700",
+              color:
+                "#6b7280",
+              marginBottom:
+                "6px",
+              letterSpacing:
+                "0.5px",
             }}
           >
             SELECT SITE
@@ -1372,9 +980,10 @@ function Production() {
               )
             }
             style={{
-              width: "100%",
-              maxWidth:
-                "500px",
+              width:
+                "100%",
+              boxSizing:
+                "border-box",
               padding:
                 "11px 13px",
               border:
@@ -1422,35 +1031,52 @@ function Production() {
               )
             )}
           </select>
-
-          {/* DATA SOURCE INDICATOR */}
-
-          <div
-            style={{
-              marginTop:
-                "8px",
-              fontSize:
-                "11px",
-              color:
-                "#6b7280",
-            }}
-          >
-            ✓ Data source:
-            Supabase
-            <span
-              style={{
-                marginLeft:
-                  "10px",
-              }}
-            >
-              {sites.length}{" "}
-              sites •{" "}
-              {panels.length}{" "}
-              panels
-            </span>
-          </div>
         </div>
+      </header>
 
+      {/* =====================================================
+          ERROR
+      ===================================================== */}
+
+      {error && (
+        <div
+          style={{
+            marginBottom:
+              "12px",
+            padding:
+              "12px 15px",
+            background:
+              "#fef2f2",
+            border:
+              "1px solid #fecaca",
+            color:
+              "#b91c1c",
+            borderRadius:
+              "8px",
+            fontSize:
+              "13px",
+            fontWeight:
+              "600",
+          }}
+        >
+          Production data error:{" "}
+          {error}
+        </div>
+      )}
+
+      {/* =====================================================
+          MAIN REPORT PANEL
+      ===================================================== */}
+
+      <section
+        className="panel"
+        style={{
+          width:
+            "100%",
+          boxSizing:
+            "border-box",
+        }}
+      >
         {/* ===================================================
             NO SITE
         =================================================== */}
@@ -1498,8 +1124,8 @@ function Production() {
             >
               {sites.length ===
               0
-                ? "No sites are currently available in Supabase."
-                : "Select a site above to view packed panels and export reports."}
+                ? "No sites are currently available."
+                : "Select a site above to view the production summary and export the complete Excel report."}
             </p>
           </div>
         )}
@@ -1516,7 +1142,7 @@ function Production() {
             }}
           >
             {/* =================================================
-                SITE SUMMARY
+                SITE SUMMARY + MAIN EXCEL
             ================================================= */}
 
             <div
@@ -1528,7 +1154,7 @@ function Production() {
                 justifyContent:
                   "space-between",
                 gap:
-                  "15px",
+                  "20px",
                 flexWrap:
                   "wrap",
                 marginBottom:
@@ -1565,29 +1191,26 @@ function Production() {
                 <p
                   style={{
                     margin:
-                      "4px 0 0",
+                      "5px 0 0",
                     color:
-                      "#6b7280",
+                      "#475569",
                     fontSize:
-                      "13px",
+                      "14px",
+                    fontWeight:
+                      "600",
                   }}
                 >
                   {sitePanels.length}{" "}
                   total panels •{" "}
-                  {
-                    packedPanels.length
-                  }{" "}
+                  {packedPanels.length}{" "}
                   packed panels •{" "}
-                  {
-                    packetGroups.length
-                  }{" "}
+                  {packetGroups.length}{" "}
                   packets
                 </p>
               </div>
 
-              {/* MAIN EXCEL */}
-
               <button
+                type="button"
                 onClick={
                   downloadExcel
                 }
@@ -1608,7 +1231,7 @@ function Production() {
                   borderRadius:
                     "8px",
                   padding:
-                    "11px 16px",
+                    "11px 17px",
                   fontWeight:
                     "700",
                   cursor:
@@ -1616,10 +1239,148 @@ function Production() {
                     0
                       ? "pointer"
                       : "not-allowed",
+                  whiteSpace:
+                    "nowrap",
                 }}
               >
-                ↓ Export Excel
+                ↓ Export Complete Excel
               </button>
+            </div>
+
+            {/* =================================================
+                REPORT INFORMATION
+            ================================================= */}
+
+            <div
+              style={{
+                display:
+                  "grid",
+                gridTemplateColumns:
+                  "repeat(3, minmax(0, 1fr))",
+                gap:
+                  "12px",
+                marginBottom:
+                  "20px",
+              }}
+            >
+              <div
+                style={{
+                  padding:
+                    "14px 16px",
+                  border:
+                    "1px solid #e5e7eb",
+                  borderRadius:
+                    "9px",
+                  background:
+                    "#f8fafc",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize:
+                      "11px",
+                    color:
+                      "#6b7280",
+                    fontWeight:
+                      "700",
+                    marginBottom:
+                      "4px",
+                  }}
+                >
+                  TOTAL PANELS
+                </div>
+
+                <strong
+                  style={{
+                    fontSize:
+                      "22px",
+                  }}
+                >
+                  {
+                    sitePanels.length
+                  }
+                </strong>
+              </div>
+
+              <div
+                style={{
+                  padding:
+                    "14px 16px",
+                  border:
+                    "1px solid #bbf7d0",
+                  borderRadius:
+                    "9px",
+                  background:
+                    "#f0fdf4",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize:
+                      "11px",
+                    color:
+                      "#15803d",
+                    fontWeight:
+                      "700",
+                    marginBottom:
+                      "4px",
+                  }}
+                >
+                  PACKED PANELS
+                </div>
+
+                <strong
+                  style={{
+                    fontSize:
+                      "22px",
+                    color:
+                      "#15803d",
+                  }}
+                >
+                  {
+                    packedPanels.length
+                  }
+                </strong>
+              </div>
+
+              <div
+                style={{
+                  padding:
+                    "14px 16px",
+                  border:
+                    "1px solid #e5e7eb",
+                  borderRadius:
+                    "9px",
+                  background:
+                    "#f8fafc",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize:
+                      "11px",
+                    color:
+                      "#6b7280",
+                    fontWeight:
+                      "700",
+                    marginBottom:
+                      "4px",
+                  }}
+                >
+                  PACKETS
+                </div>
+
+                <strong
+                  style={{
+                    fontSize:
+                      "22px",
+                  }}
+                >
+                  {
+                    packetGroups.length
+                  }
+                </strong>
+              </div>
             </div>
 
             {/* =================================================
@@ -1673,140 +1434,99 @@ function Production() {
                   }}
                 >
                   Packed panels will
-                  appear here
-                  automatically
-                  after QR Tracking
-                  updates Supabase.
+                  appear here automatically
+                  after QR Tracking updates
+                  Supabase.
                 </span>
               </div>
             )}
 
             {/* =================================================
-                PACKET LIST
+                REPORT READY
+                Individual packet Excel downloads intentionally
+                removed. The complete Excel above contains all
+                packed panel data with packet information.
             ================================================= */}
 
-            {packetGroups.length >
+            {packedPanels.length >
               0 && (
-              <div>
+              <div
+                style={{
+                  padding:
+                    "18px",
+                  border:
+                    "1px solid #e5e7eb",
+                  borderRadius:
+                    "10px",
+                  background:
+                    "#ffffff",
+                }}
+              >
                 <div
                   style={{
                     display:
-                      "grid",
-                    gridTemplateColumns:
-                      "1fr 120px 160px",
+                      "flex",
+                    alignItems:
+                      "center",
                     gap:
-                      "15px",
-                    padding:
-                      "11px 14px",
-                    background:
-                      "#f3f4f6",
-                    borderRadius:
-                      "8px",
-                    fontSize:
-                      "12px",
-                    fontWeight:
-                      "700",
-                    color:
-                      "#6b7280",
+                      "10px",
+                    marginBottom:
+                      "6px",
                   }}
                 >
-                  <span>
-                    PACKET
-                  </span>
+                  <div
+                    style={{
+                      width:
+                        "32px",
+                      height:
+                        "32px",
+                      borderRadius:
+                        "8px",
+                      background:
+                        "#dcfce7",
+                      color:
+                        "#15803d",
+                      display:
+                        "flex",
+                      alignItems:
+                        "center",
+                      justifyContent:
+                        "center",
+                      fontWeight:
+                        "800",
+                    }}
+                  >
+                    ✓
+                  </div>
 
-                  <span>
-                    PANELS
-                  </span>
-
-                  <span>
-                    REPORT
-                  </span>
+                  <strong
+                    style={{
+                      fontSize:
+                        "15px",
+                      color:
+                        "#111827",
+                    }}
+                  >
+                    Complete production report ready
+                  </strong>
                 </div>
 
-                {packetGroups.map(
-                  ({
-                    packet,
-                    panels:
-                      packetPanels,
-                  }) => (
-                    <div
-                      key={
-                        packet
-                      }
-                      style={{
-                        display:
-                          "grid",
-                        gridTemplateColumns:
-                          "1fr 120px 160px",
-                        gap:
-                          "15px",
-                        alignItems:
-                          "center",
-                        padding:
-                          "15px 14px",
-                        borderBottom:
-                          "1px solid #e5e7eb",
-                      }}
-                    >
-                      <div>
-                        <strong>
-                          Packet{" "}
-                          {
-                            packet
-                          }
-                        </strong>
-                      </div>
-
-                      <div>
-                        <strong>
-                          {
-                            packetPanels.length
-                          }
-                        </strong>
-
-                        <span
-                          style={{
-                            color:
-                              "#6b7280",
-                            marginLeft:
-                              "4px",
-                          }}
-                        >
-                          panels
-                        </span>
-                      </div>
-
-                      <div>
-                        <button
-                          onClick={() =>
-                            downloadPacketExcel(
-                              packet,
-                              packetPanels
-                            )
-                          }
-                          style={{
-                            border:
-                              "1px solid #2563eb",
-                            background:
-                              "#ffffff",
-                            color:
-                              "#2563eb",
-                            borderRadius:
-                              "7px",
-                            padding:
-                              "7px 11px",
-                            fontWeight:
-                              "600",
-                            cursor:
-                              "pointer",
-                          }}
-                        >
-                          ↓ Excel
-                        </button>
-                      </div>
-                    </div>
-                  )
-                )}
+                <p
+                  style={{
+                    margin:
+                      "0 0 0 42px",
+                    color:
+                      "#64748b",
+                    fontSize:
+                      "13px",
+                  }}
+                >
+                  The Excel export contains
+                  all packed panels for this
+                  site, including packet,
+                  QR, panel, material and
+                  size details.
+                </p>
               </div>
             )}
           </div>

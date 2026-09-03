@@ -5485,6 +5485,9 @@ function QRTracking() {
               marginBottom:
                 7,
 
+              marginTop:
+                10,
+
               flexShrink:
                 0,
             }}

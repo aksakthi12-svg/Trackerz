@@ -1,1133 +1,2606 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import * as XLSX from "xlsx";
+import QRCode from "qrcode";
+import { jsPDF } from "jspdf";
 
-function CutlistImport() {
-  const [siteName, setSiteName] = useState("");
-  const [clientName, setClientName] = useState("");
-  const [contact, setContact] = useState("");
-  const [address, setAddress] = useState("");
+/*
+=========================================================
+TRACKERZ - CUTLIST IMPORT
+=========================================================
 
-  const [fileName, setFileName] = useState("");
-  const [rows, setRows] = useState([]);
-  const [site, setSite] = useState(null);
+CONNECTED TO EXISTING App.jsx
 
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
+App.jsx remains responsible for:
+- Supabase authentication
+- Supabase data loading
+- Site creation
+- Panel insertion
+- RLS
+- Dashboard
+- QR Tracking
+- Production
+- Dispatch
+- Reports
 
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [isReleased, setIsReleased] = useState(false);
+This component is only the Cutlist Import UI.
 
-  // ---------------------------------------------------------
-  // Utility
-  // ---------------------------------------------------------
+DATABASE WRITES:
+- createSiteRecord() -> App.jsx
+- importCutlist()     -> App.jsx
 
-  const cleanText = (value) => {
-    if (value === null || value === undefined) {
+NO localStorage is used here.
+=========================================================
+*/
+
+export default function CutlistImport({
+  selectedSite,
+  setSelectedSite,
+  setActivePage,
+
+  importFile,
+  importRows,
+  importing,
+
+  handleFileSelect,
+  importCutlist,
+
+  setImportRows,
+  setImportFile,
+
+  setMessage,
+  setError,
+
+  createSiteRecord,
+}) {
+  /* =====================================================
+     LOCAL CUTLIST FORM
+  ===================================================== */
+
+  const [siteName, setSiteName] = useState(
+    selectedSite?.site_name || ""
+  );
+
+  const [clientName, setClientName] = useState(
+    selectedSite?.client_name || ""
+  );
+
+  const [contact, setContact] = useState(
+    selectedSite?.contact || ""
+  );
+
+  const [address, setAddress] = useState(
+    selectedSite?.address || ""
+  );
+
+  const [released, setReleased] = useState(false);
+
+  const [releasedSite, setReleasedSite] = useState(
+    selectedSite || null
+  );
+
+  const [manualQrLoading, setManualQrLoading] =
+    useState(false);
+
+  const [showManualPrint, setShowManualPrint] =
+    useState(false);
+
+  const [manualLabels, setManualLabels] =
+    useState([]);
+
+  /* =====================================================
+     SAFE ROWS
+  ===================================================== */
+
+  const rows = Array.isArray(importRows)
+    ? importRows
+    : [];
+
+  /* =====================================================
+     TEXT HELPERS
+  ===================================================== */
+
+  function cleanText(value) {
+    if (
+      value === null ||
+      value === undefined
+    ) {
       return "";
     }
 
     return String(value).trim();
-  };
+  }
 
-  const makeId = (prefix = "ID") => {
-    return `${prefix}-${Date.now()}-${Math.random()
-      .toString(36)
-      .substring(2, 8)
-      .toUpperCase()}`;
-  };
+  function normalizeKey(value) {
+    return cleanText(value)
+      .toLowerCase()
+      .replace(/[\s_\-./]+/g, " ")
+      .replace(/[()]/g, "")
+      .trim();
+  }
 
-  const getStorage = (key) => {
-    try {
-      return JSON.parse(localStorage.getItem(key) || "[]");
-    } catch {
-      return [];
-    }
-  };
+  /* =====================================================
+     FLEXIBLE COLUMN FINDER
 
-  const saveStorage = (key, data) => {
-    localStorage.setItem(key, JSON.stringify(data));
-  };
+     Supports different factory cutlist headings.
+  ===================================================== */
 
-  // ---------------------------------------------------------
-  // Create safe customer name for QR
-  // ---------------------------------------------------------
-
-  const makeCustomerCode = (name) => {
-    const cleaned = cleanText(name)
-      .toUpperCase()
-      .replace(/[^A-Z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "");
-
-    return cleaned || "CUSTOMER";
-  };
-
-  // ---------------------------------------------------------
-  // Find likely panel number column
-  // ---------------------------------------------------------
-
-  const getPanelNumber = (row, index) => {
-    const possibleColumns = [
-      "Panel No",
-      "Panel Number",
-      "Panel",
-      "Panel ID",
-      "Part No",
-      "Part Number",
-      "Item",
-      "Item No",
-      "S.No",
-      "S No",
-      "Sl No",
-      "Sl. No",
-    ];
-
-    for (const column of possibleColumns) {
-      if (
-        Object.prototype.hasOwnProperty.call(row, column) &&
-        cleanText(row[column])
-      ) {
-        return cleanText(row[column]);
-      }
+  function findColumn(row, aliases) {
+    if (
+      !row ||
+      typeof row !== "object"
+    ) {
+      return null;
     }
 
-    return String(index + 1).padStart(4, "0");
-  };
+    const keys = Object.keys(row);
 
-  // ---------------------------------------------------------
-  // Check if row is usable
-  // ---------------------------------------------------------
+    const normalizedAliases =
+      aliases.map(normalizeKey);
 
-  const isValidRow = (row) => {
-    if (!row || typeof row !== "object") {
-      return false;
+    /* Exact normalized match */
+
+    const exact = keys.find(
+      (key) =>
+        normalizedAliases.includes(
+          normalizeKey(key)
+        )
+    );
+
+    if (exact) {
+      return exact;
     }
 
-    const values = Object.values(row);
+    /* Partial match */
 
-    return values.some((value) => cleanText(value) !== "");
-  };
+    const partial = keys.find((key) => {
+      const normalized =
+        normalizeKey(key);
 
-  // ---------------------------------------------------------
-  // Generate QR data
-  // ---------------------------------------------------------
+      return normalizedAliases.some(
+        (alias) =>
+          normalized.includes(alias) ||
+          alias.includes(normalized)
+      );
+    });
 
-  const generateQRData = (customerCode, panelNumber) => {
-    const number = String(panelNumber)
-      .replace(/\s+/g, "-")
-      .replace(/[^A-Z0-9-]/gi, "");
+    return partial || null;
+  }
 
-    return `TRK-${customerCode}-${number}`;
-  };
+  function getValue(
+    row,
+    aliases,
+    fallback = ""
+  ) {
+    const column = findColumn(
+      row,
+      aliases
+    );
 
-  // ---------------------------------------------------------
-  // Upload Excel
-  // ---------------------------------------------------------
-
-  const handleFileUpload = async (event) => {
-    const file = event.target.files?.[0];
-
-    setError("");
-    setMessage("");
-
-    if (!file) {
-      return;
+    if (!column) {
+      return fallback;
     }
 
-    if (!siteName.trim()) {
-      setError("Please enter the Site Name before uploading the cutlist.");
-      event.target.value = "";
-      return;
+    return cleanText(row[column]);
+  }
+
+  function getNumber(
+    row,
+    aliases,
+    fallback = ""
+  ) {
+    const value = getValue(
+      row,
+      aliases,
+      ""
+    );
+
+    if (value === "") {
+      return fallback;
     }
 
-    if (!clientName.trim()) {
-      setError("Please enter the Client Name before uploading the cutlist.");
-      event.target.value = "";
-      return;
+    const number = Number(
+      String(value).replace(
+        /,/g,
+        ""
+      )
+    );
+
+    return Number.isFinite(number)
+      ? number
+      : fallback;
+  }
+
+  /* =====================================================
+     SITE NAME FOR QR
+
+     QR MUST USE SITE NAME.
+     CLIENT NAME IS NEVER USED FOR QR.
+  ===================================================== */
+
+  const activeSiteName = cleanText(
+    releasedSite?.site_name ||
+      selectedSite?.site_name ||
+      siteName
+  );
+
+  const qrSiteName = String(
+    activeSiteName || "SITE"
+  )
+    .trim()
+    .replace(
+      /[^a-zA-Z0-9]+/g,
+      "-"
+    )
+    .replace(
+      /^-+|-+$/g,
+      ""
+    )
+    .toUpperCase();
+
+  function getQrData(number) {
+    return `TRK-${qrSiteName}-${String(
+      number
+    ).padStart(4, "0")}`;
+  }
+
+  /* =====================================================
+     CUTLIST FIELD MAPPING
+  ===================================================== */
+
+  function getPanelName(
+    row,
+    index
+  ) {
+    return getValue(
+      row,
+      [
+        "Assembly Label",
+        "Assembly",
+        "FB Name",
+        "FB_Name",
+        "Panel Name",
+        "Panel",
+        "Part Name",
+        "Part",
+        "Part No",
+        "Part Number",
+        "Item Name",
+        "Item",
+        "Description",
+        "Name",
+      ],
+      `Panel ${index + 1}`
+    );
+  }
+
+  function getSectionName(row) {
+    return getValue(
+      row,
+      [
+        "Section Name",
+        "Section",
+        "Cabinet Name",
+        "Cabinet",
+      ],
+      ""
+    );
+  }
+
+  function getRoomName(row) {
+    return getValue(
+      row,
+      [
+        "Room Name",
+        "Room",
+      ],
+      ""
+    );
+  }
+
+  function getThickness(row) {
+    return getValue(
+      row,
+      [
+        "Thickness",
+        "Thk",
+        "THK",
+        "T",
+      ],
+      ""
+    );
+  }
+
+  function getLength(row) {
+    return getValue(
+      row,
+      [
+        "FB Length",
+        "Length",
+        "Len",
+        "L",
+      ],
+      ""
+    );
+  }
+
+  function getWidth(row) {
+    return getValue(
+      row,
+      [
+        "FB Width",
+        "Width",
+        "Wid",
+        "W",
+      ],
+      ""
+    );
+  }
+
+  function getQuantity(row) {
+    const quantity = getNumber(
+      row,
+      [
+        "Quantity",
+        "Qty",
+        "Count",
+      ],
+      1
+    );
+
+    const number = Number(
+      quantity
+    );
+
+    if (
+      !Number.isFinite(number) ||
+      number <= 0
+    ) {
+      return 1;
     }
 
-    setIsProcessing(true);
-    setFileName(file.name);
+    return Math.floor(number);
+  }
 
-    try {
-      const buffer = await file.arrayBuffer();
+  function getMaterial(row) {
+    return getValue(
+      row,
+      [
+        "Material",
+        "Board",
+        "Board Material",
+      ],
+      ""
+    );
+  }
 
-      const workbook = XLSX.read(buffer, {
-        type: "array",
-      });
+  function getRemark(row) {
+    return getValue(
+      row,
+      [
+        "Remark",
+        "Remarks",
+        "Note",
+        "Notes",
+      ],
+      ""
+    );
+  }
 
-      const firstSheetName = workbook.SheetNames[0];
+  /* =====================================================
+     PHYSICAL PANEL ROWS
 
-      if (!firstSheetName) {
-        throw new Error("No worksheet was found in the Excel file.");
-      }
+     Used for QR labels.
 
-      const worksheet = workbook.Sheets[firstSheetName];
+     If Quantity = 3,
+     three physical labels are generated.
+  ===================================================== */
 
-      const importedRows = XLSX.utils.sheet_to_json(worksheet, {
-        defval: "",
-      });
+  const physicalRows = useMemo(() => {
+    const result = [];
 
-      if (!importedRows.length) {
-        throw new Error("The uploaded cutlist is empty.");
-      }
+    rows.forEach(
+      (row, rowIndex) => {
+        const quantity =
+          getQuantity(row);
 
-      const validRows = importedRows.filter(isValidRow);
+        for (
+          let copy = 1;
+          copy <= quantity;
+          copy++
+        ) {
+          result.push({
+            sourceRow: row,
+            sourceRowIndex:
+              rowIndex,
 
-      if (!validRows.length) {
-        throw new Error("No valid panel rows were found.");
-      }
-
-      const customerCode = makeCustomerCode(clientName);
-
-      // -----------------------------------------------------
-      // Create a unique site ID
-      // -----------------------------------------------------
-
-      const siteId = makeId("SITE");
-
-      // -----------------------------------------------------
-      // Existing data
-      // -----------------------------------------------------
-
-      const existingSites = getStorage("trackerzSites");
-      const existingPanels = getStorage("trackerzPanels");
-
-      // -----------------------------------------------------
-      // Generate panel data
-      // -----------------------------------------------------
-
-      const newPanels = [];
-      const usedQR = new Set();
-
-      validRows.forEach((row, index) => {
-        const panelNumber = getPanelNumber(row, index);
-
-        let qrData = generateQRData(customerCode, panelNumber);
-
-        // Ensure QR is unique inside this import
-        if (usedQR.has(qrData)) {
-          let counter = 2;
-
-          while (usedQR.has(`${qrData}-${counter}`)) {
-            counter++;
-          }
-
-          qrData = `${qrData}-${counter}`;
+            quantityInstance:
+              copy,
+          });
         }
+      }
+    );
 
-        usedQR.add(qrData);
+    return result;
+  }, [rows]);
 
-        const panel = {
-          id: makeId("PANEL"),
+  const physicalPanelCount =
+    physicalRows.length;
 
-          siteId,
+  /* =====================================================
+     QR DATA FOR SOURCE ROW
 
-          siteName: siteName.trim(),
+     This is used by downloaded QR cutlist.
 
-          clientName: clientName.trim(),
+     One QR is assigned per physical panel,
+     matching App.jsx database import.
+  ===================================================== */
 
-          contact: contact.trim(),
+  function getRowQr(
+    index
+  ) {
+    return getQrData(
+      index + 1
+    );
+  }
 
-          address: address.trim(),
+  /* =====================================================
+     FILE UPLOAD
 
-          panelNo: panelNumber,
+     Uses App.jsx handler.
+  ===================================================== */
 
-          qrData,
+  async function handleUpload(
+    event
+  ) {
+    setError?.("");
+    setMessage?.("");
 
-          status: "pending",
-
-          packetId: null,
-
-          packetName: null,
-
-          packedAt: null,
-
-          createdAt: new Date().toISOString(),
-
-          // Keep the original Excel row
-          data: {
-            ...row,
-          },
-        };
-
-        newPanels.push(panel);
-      });
-
-      // -----------------------------------------------------
-      // Create site
-      // -----------------------------------------------------
-
-      const newSite = {
-        id: siteId,
-
-        siteName: siteName.trim(),
-
-        clientName: clientName.trim(),
-
-        contact: contact.trim(),
-
-        address: address.trim(),
-
-        panelCount: newPanels.length,
-
-        packedCount: 0,
-
-        balanceCount: newPanels.length,
-
-        status: "QR Ready",
-
-        released: false,
-
-        createdAt: new Date().toISOString(),
-
-        sourceFile: file.name,
-      };
-
-      // -----------------------------------------------------
-      // Save site
-      // -----------------------------------------------------
-
-      saveStorage("trackerzSites", [
-        ...existingSites,
-        newSite,
-      ]);
-
-      // -----------------------------------------------------
-      // Save panels
-      // -----------------------------------------------------
-
-      saveStorage("trackerzPanels", [
-        ...existingPanels,
-        ...newPanels,
-      ]);
-
-      // -----------------------------------------------------
-      // Create preview rows
-      // -----------------------------------------------------
-
-      const previewRows = validRows.map((row, index) => {
-        return {
-          ...row,
-          "QR Data": newPanels[index].qrData,
-        };
-      });
-
-      setRows(previewRows);
-
-      setSite(newSite);
-
-      setIsReleased(false);
-
-      setMessage(
-        `${newPanels.length} panels imported successfully. QR data has been generated.`
+    try {
+      await handleFileSelect(
+        event
       );
     } catch (err) {
-      console.error("Cutlist import error:", err);
+      console.error(
+        "Cutlist upload error:",
+        err
+      );
 
-      setError(
+      setError?.(
         err?.message ||
-          "Unable to import the cutlist. Please check the Excel file."
-      );
-
-      setRows([]);
-      setSite(null);
-    } finally {
-      setIsProcessing(false);
-
-      event.target.value = "";
-    }
-  };
-
-  // ---------------------------------------------------------
-  // Download modified Excel
-  // ---------------------------------------------------------
-
-  const handleDownload = () => {
-    if (!rows.length) {
-      setError("Please upload a cutlist first.");
-      return;
-    }
-
-    try {
-      const worksheet = XLSX.utils.json_to_sheet(rows);
-
-      const workbook = XLSX.utils.book_new();
-
-      XLSX.utils.book_append_sheet(
-        workbook,
-        worksheet,
-        "Cutlist"
-      );
-
-      const safeSiteName = siteName
-        .trim()
-        .replace(/[^a-zA-Z0-9-_ ]/g, "")
-        .replace(/\s+/g, "_");
-
-      const outputFileName =
-        `${safeSiteName || "Trackerz"}_QR_Cutlist.xlsx`;
-
-      XLSX.writeFile(workbook, outputFileName);
-
-      setMessage(
-        `Downloaded ${outputFileName}`
-      );
-    } catch (err) {
-      console.error("Download error:", err);
-
-      setError(
-        "Unable to download the modified cutlist."
+          "Unable to read the Excel cutlist."
       );
     }
-  };
+  }
 
-  // ---------------------------------------------------------
-  // Release to production
-  // ---------------------------------------------------------
+  /* =====================================================
+     CLEAR
+  ===================================================== */
 
-  const handleRelease = () => {
-    if (!site) {
-      setError("Please upload a cutlist first.");
-      return;
-    }
+  function clearCutlist() {
+    setImportRows?.([]);
+    setImportFile?.(null);
 
-    try {
-      const existingSites = getStorage("trackerzSites");
-
-      const updatedSites = existingSites.map((item) => {
-        if (item.id !== site.id) {
-          return item;
-        }
-
-        return {
-          ...item,
-          released: true,
-          status: "Released to Production",
-          releasedAt: new Date().toISOString(),
-        };
-      });
-
-      saveStorage("trackerzSites", updatedSites);
-
-      const updatedSite = {
-        ...site,
-        released: true,
-        status: "Released to Production",
-        releasedAt: new Date().toISOString(),
-      };
-
-      setSite(updatedSite);
-
-      setIsReleased(true);
-
-      setMessage(
-        `${site.siteName} has been released to production.`
-      );
-    } catch (err) {
-      console.error("Release error:", err);
-
-      setError(
-        "Unable to release the site to production."
-      );
-    }
-  };
-
-  // ---------------------------------------------------------
-  // Reset form
-  // ---------------------------------------------------------
-
-  const handleReset = () => {
     setSiteName("");
     setClientName("");
     setContact("");
     setAddress("");
 
-    setFileName("");
-    setRows([]);
-    setSite(null);
+    setReleased(false);
+    setReleasedSite(null);
 
-    setMessage("");
-    setError("");
+    setSelectedSite?.(null);
 
-    setIsReleased(false);
+    setMessage?.("");
+    setError?.("");
+  }
+
+  /* =====================================================
+     RELEASE TO PRODUCTION
+
+     IMPORTANT:
+
+     This does NOT insert directly into Supabase.
+
+     It calls the existing App.jsx functions.
+  ===================================================== */
+
+  async function releaseToProduction() {
+    setError?.("");
+    setMessage?.("");
+
+    const cleanSite =
+      siteName.trim();
+
+    const cleanClient =
+      clientName.trim();
+
+    if (!cleanSite) {
+      setError?.(
+        "Please enter the site name."
+      );
+      return;
+    }
+
+    if (!cleanClient) {
+      setError?.(
+        "Please enter the client name."
+      );
+      return;
+    }
+
+    if (!rows.length) {
+      setError?.(
+        "Please upload the Excel cutlist first."
+      );
+      return;
+    }
+
+    if (
+      typeof createSiteRecord !==
+      "function"
+    ) {
+      setError?.(
+        "Site connection is missing in App.jsx."
+      );
+      return;
+    }
+
+    if (
+      typeof importCutlist !==
+      "function"
+    ) {
+      setError?.(
+        "Cutlist import connection is missing in App.jsx."
+      );
+      return;
+    }
+
+    try {
+      /* -----------------------------------------------
+         CREATE SITE USING App.jsx
+      ------------------------------------------------ */
+
+      const newSite =
+        await createSiteRecord({
+          site_name:
+            cleanSite,
+
+          client_name:
+            cleanClient,
+
+          contact:
+            contact.trim(),
+
+          address:
+            address.trim(),
+        });
+
+      if (!newSite?.id) {
+        throw new Error(
+          "Site was not created correctly."
+        );
+      }
+
+      /* -----------------------------------------------
+         SELECT CREATED SITE
+      ------------------------------------------------ */
+
+      setSelectedSite?.(
+        newSite
+      );
+
+      setReleasedSite(
+        newSite
+      );
+
+      /* -----------------------------------------------
+         INSERT PANELS USING App.jsx
+      ------------------------------------------------ */
+
+      await importCutlist(
+        newSite,
+        {
+          keepPreview: true,
+        }
+      );
+
+      setReleased(true);
+
+      setMessage?.(
+        `${physicalPanelCount} physical panel${
+          physicalPanelCount === 1
+            ? ""
+            : "s"
+        } released to production successfully.`
+      );
+    } catch (err) {
+      console.error(
+        "Release to production error:",
+        err
+      );
+
+      setReleased(false);
+      setReleasedSite(null);
+
+      setError?.(
+        err?.message ||
+          "Unable to release the cutlist to production."
+      );
+    }
+  }
+
+  /* =====================================================
+     DOWNLOAD QR CUTLIST
+  ===================================================== */
+
+  function downloadQrCutlist() {
+    if (!rows.length) {
+      setError?.(
+        "Upload a cutlist first."
+      );
+      return;
+    }
+
+    if (!releasedSite) {
+      setError?.(
+        "Release the cutlist to production first."
+      );
+      return;
+    }
+
+    /*
+     * IMPORTANT:
+     * The downloaded QR cutlist must use the same
+     * physical-panel logic as Supabase and the manual
+     * labels.
+     *
+     * If Quantity = 3, this creates 3 output rows:
+     *   row 1 -> QR 0001
+     *   row 2 -> QR 0002
+     *   row 3 -> QR 0003
+     *
+     * Each output row represents ONE physical panel.
+     */
+    const outputRows = [];
+
+    let physicalIndex = 0;
+
+    rows.forEach(
+      (row) => {
+        const quantity =
+          getQuantity(row);
+
+        for (
+          let copy = 1;
+          copy <= quantity;
+          copy++
+        ) {
+          physicalIndex += 1;
+
+          outputRows.push({
+            ...row,
+
+            Quantity: 1,
+
+            "QR Data":
+              getQrData(
+                physicalIndex
+              ),
+          });
+        }
+      }
+    );
+
+    const worksheet =
+      XLSX.utils.json_to_sheet(
+        outputRows
+      );
+
+    const workbook =
+      XLSX.utils.book_new();
+
+    XLSX.utils.book_append_sheet(
+      workbook,
+      worksheet,
+      "QR Cutlist"
+    );
+
+    XLSX.writeFile(
+      workbook,
+      `${qrSiteName}_QR_Cutlist.xlsx`
+    );
+
+    setMessage?.(
+      `${outputRows.length} physical QR panel${
+        outputRows.length === 1
+          ? ""
+          : "s"
+      } exported successfully.`
+    );
+  }
+
+  /* =====================================================
+     MANUAL QR LABEL DATA
+  ===================================================== */
+
+  function getManualLabelData(
+    physicalRow,
+    index
+  ) {
+    const row =
+      physicalRow.sourceRow;
+
+    return {
+      labelNumber:
+        index + 1,
+
+      qrData:
+        getQrData(
+          index + 1
+        ),
+
+      panelName:
+        getPanelName(
+          row,
+          physicalRow.sourceRowIndex
+        ),
+
+      sectionName:
+        getSectionName(
+          row
+        ),
+
+      roomName:
+        getRoomName(
+          row
+        ),
+
+      thickness:
+        getThickness(
+          row
+        ),
+
+      length:
+        getLength(
+          row
+        ),
+
+      width:
+        getWidth(
+          row
+        ),
+
+      material:
+        getMaterial(
+          row
+        ),
+
+      remark:
+        getRemark(
+          row
+        ),
+
+      quantityInstance:
+        physicalRow.quantityInstance,
+
+      originalQuantity:
+        getQuantity(row),
+    };
+  }
+
+  /* =====================================================
+     GENERATE MANUAL QR LABELS
+
+     NOVAJET MPL24L / A4 PORTRAIT
+
+     Sheet:
+     - 210mm × 297mm
+     - 3 columns × 8 rows
+     - Label: 64mm × 34mm
+     - Left/right margins: 6mm
+     - Column gap: 3mm
+     - Top margin: 12mm
+     - No row gap
+     - Exactly 24 labels are grouped into each A4 page
+
+     IMPORTANT:
+     The physical label is only 64 × 34mm.
+     QR/text/border are kept inside that peel area.
+  ===================================================== */
+
+  async function openManualQrPrint() {
+    if (!physicalRows.length) {
+      setError?.(
+        "Upload a cutlist before printing QR labels."
+      );
+      return;
+    }
+
+    setManualQrLoading(true);
+    setError?.("");
+    setMessage?.("");
+
+    try {
+      const labels = await Promise.all(
+        physicalRows.map(async (physicalRow, index) => {
+          const data = getManualLabelData(
+            physicalRow,
+            index
+          );
+
+          const qrImage = await QRCode.toDataURL(
+            data.qrData,
+            {
+              errorCorrectionLevel: "M",
+              margin: 1,
+              width: 220,
+            }
+          );
+
+          return {
+            ...data,
+            qrImage,
+          };
+        })
+      );
+
+      setManualLabels(labels);
+      setShowManualPrint(true);
+    } catch (err) {
+      console.error(
+        "QR label generation error:",
+        err
+      );
+
+      setError?.(
+        "Unable to generate QR labels."
+      );
+    } finally {
+      setManualQrLoading(false);
+    }
+  }
+
+  /* =====================================================
+     PRINT BROWSER VERSION
+
+     Browser print must be:
+     - A4
+     - Portrait
+     - Scale 100%
+     - Margins None
+     - Headers/footers Off
+  ===================================================== */
+
+  function printManualQrLabels() {
+    window.print();
+  }
+
+  /* =====================================================
+     DOWNLOAD PDF
+
+     Creates a true A4 210 × 297mm PDF directly.
+     This avoids browser print scaling completely.
+
+     PDF geometry:
+     Left = 6mm
+     Label width = 64mm
+     Column gap = 3mm
+     Top = 12mm
+     Label height = 34mm
+     Row gap = 0mm
+
+     NOTE:
+     8 × 34 = 272mm, so with a 12mm top margin
+     the physical 34mm labels finish at 284mm,
+     leaving 13mm at the bottom. This 1mm difference
+     is unavoidable if both the sheet and label sizes
+     are kept exactly at 210 × 297 and 64 × 34mm.
+  ===================================================== */
+
+  function downloadManualQrPdf() {
+    if (!manualLabels.length) {
+      setError?.(
+        "Generate the QR labels first."
+      );
+      return;
+    }
+
+    try {
+      const pdf = new jsPDF({
+        orientation: "portrait",
+        unit: "mm",
+        format: [210, 297],
+        compress: true,
+      });
+
+      const PAGE_W = 210;
+      const PAGE_H = 297;
+
+      const LABEL_W = 64;
+      const LABEL_H = 34;
+
+      const LEFT = 6;
+      const TOP = 12;
+      const COL_GAP = 3;
+      const ROW_GAP = 0;
+
+      const BORDER_INSET = 0.45;
+
+      manualLabels.forEach((label, index) => {
+        /*
+         * 24 labels per physical A4 sheet.
+         * IMPORTANT: reset row/column for every new page.
+         */
+        const indexOnPage = index % 24;
+        const col = indexOnPage % 3;
+        const row = Math.floor(indexOnPage / 3);
+
+        if (index > 0 && indexOnPage === 0) {
+          pdf.addPage(
+            [PAGE_W, PAGE_H],
+            "portrait"
+          );
+        }
+
+        const x =
+          LEFT +
+          col * (LABEL_W + COL_GAP);
+
+        const y =
+          TOP +
+          row * (LABEL_H + ROW_GAP);
+
+        /*
+         * Border is deliberately drawn INSIDE the
+         * 64 × 34mm peel area.
+         */
+        pdf.setLineWidth(0.25);
+        pdf.roundedRect(
+          x + BORDER_INSET,
+          y + BORDER_INSET,
+          LABEL_W -
+            BORDER_INSET * 2,
+          LABEL_H -
+            BORDER_INSET * 2,
+          1.2,
+          1.2,
+          "S"
+        );
+
+        /*
+         * Small QR.
+         *
+         * 14mm keeps it safely inside the label and
+         * leaves enough room for readable panel data.
+         */
+        const QR = 14;
+
+        pdf.addImage(
+          label.qrImage,
+          "PNG",
+          x + 2.2,
+          y + 9.2,
+          QR,
+          QR,
+          undefined,
+          "FAST"
+        );
+
+        const textX = x + 18.5;
+
+        /* BRAND */
+        pdf.setTextColor(17, 24, 39);
+        pdf.setFont(
+          "helvetica",
+          "bold"
+        );
+        pdf.setFontSize(6.2);
+        pdf.text(
+          "TRACKERZ",
+          textX,
+          y + 5.2
+        );
+
+        /* LABEL NUMBER */
+        pdf.setFontSize(10);
+        pdf.text(
+          String(
+            label.labelNumber
+          ).padStart(4, "0"),
+          textX,
+          y + 9.6
+        );
+
+        /* PANEL NAME */
+        pdf.setFont(
+          "helvetica",
+          "bold"
+        );
+        pdf.setFontSize(5.6);
+
+        const panelName =
+          cleanText(
+            label.panelName
+          ) || "Panel";
+
+        pdf.text(
+          pdf.splitTextToSize(
+            `PANEL: ${panelName}`,
+            42
+          ).slice(0, 1),
+          textX,
+          y + 13.5
+        );
+
+        /* SECTION */
+        const section =
+          cleanText(
+            label.sectionName
+          );
+
+        pdf.setFont(
+          "helvetica",
+          "normal"
+        );
+        pdf.setFontSize(5.2);
+
+        pdf.text(
+          pdf.splitTextToSize(
+            `SECTION: ${section || "-"}`,
+            42
+          ).slice(0, 1),
+          textX,
+          y + 17.1
+        );
+
+        /* ROOM */
+        const room =
+          cleanText(
+            label.roomName
+          );
+
+        pdf.text(
+          pdf.splitTextToSize(
+            `ROOM: ${room || "-"}`,
+            42
+          ).slice(0, 1),
+          textX,
+          y + 20.7
+        );
+
+        /* SIZE + THICKNESS */
+        pdf.setFont(
+          "helvetica",
+          "bold"
+        );
+        pdf.setFontSize(5.4);
+
+        const sizeText =
+          `SIZE: L ${cleanText(label.length) || "-"} × ` +
+          `W ${cleanText(label.width) || "-"} × ` +
+          `T ${cleanText(label.thickness) || "-"}`;
+
+        pdf.text(
+          pdf.splitTextToSize(
+            sizeText,
+            42
+          ).slice(0, 1),
+          textX,
+          y + 24.3
+        );
+
+        /* MATERIAL */
+        const material =
+          cleanText(
+            label.material
+          );
+
+        pdf.setFont(
+          "helvetica",
+          "normal"
+        );
+        pdf.setFontSize(5.1);
+
+        pdf.text(
+          pdf.splitTextToSize(
+            `MAT: ${material || "-"}`,
+            42
+          ).slice(0, 1),
+          textX,
+          y + 27.8
+        );
+
+        /* QR ID - compact and readable */
+        pdf.setFont(
+          "courier",
+          "bold"
+        );
+        pdf.setFontSize(4.5);
+        pdf.text(
+          label.qrData,
+          x + 2.2,
+          y + 31.3
+        );
+      });
+
+      const safeSite =
+        qrSiteName || "SITE";
+
+      pdf.save(
+        `${safeSite}_Manual_QR_Labels_24L.pdf`
+      );
+
+      setMessage?.(
+        "Manual QR label PDF downloaded successfully."
+      );
+    } catch (err) {
+      console.error(
+        "Manual QR PDF error:",
+        err
+      );
+
+      setError?.(
+        err?.message ||
+          "Unable to create the QR label PDF."
+      );
+    }
+  }
+
+  function closeManualQrPrint() {
+    setShowManualPrint(false);
+  }
+
+  /* =====================================================
+     STYLES
+  ===================================================== */
+
+  const inputStyle = {
+    width: "100%",
+    boxSizing: "border-box",
+    height: "40px",
+    padding:
+      "8px 11px",
+    border:
+      "1px solid #d1d5db",
+    borderRadius:
+      "7px",
+    fontSize: "14px",
+    background:
+      "#ffffff",
+    outline: "none",
   };
 
-  // ---------------------------------------------------------
-  // UI
-  // ---------------------------------------------------------
+  const labelStyle = {
+    display: "block",
+    marginBottom: "5px",
+    fontSize: "12px",
+    fontWeight: "700",
+    color: "#374151",
+  };
+
+  const cardStyle = {
+    background:
+      "#ffffff",
+    border:
+      "1px solid #e5e7eb",
+    borderRadius:
+      "10px",
+    padding: "14px",
+  };
+
+  /* =====================================================
+     UI
+  ===================================================== */
 
   return (
-    <div
-      style={{
-        padding: "28px",
-        maxWidth: "1400px",
-        margin: "0 auto",
-      }}
-    >
-      {/* HEADER */}
+    <>
+      {/* =================================================
+          PRINT CSS
+      ================================================= */}
 
-      <div
+      <style>
+        {`
+          /*
+           * SCREEN PREVIEW
+           *
+           * The preview uses the real physical dimensions.
+           * 1mm = 1mm in CSS.
+           */
+
+          .trackerz-label-sheet {
+            width: 210mm !important;
+            height: 297mm !important;
+            min-height: 297mm !important;
+            break-after: page !important;
+            page-break-after: always !important;
+            box-sizing: border-box !important;
+
+            display: grid !important;
+
+            grid-template-columns:
+              64mm 64mm 64mm !important;
+
+            grid-template-rows:
+              repeat(8, 34mm) !important;
+
+            column-gap: 3mm !important;
+            row-gap: 0mm !important;
+
+            padding:
+              12mm 6mm 13mm 6mm !important;
+
+            margin: 0 auto !important;
+
+            background: #ffffff !important;
+          }
+
+          .trackerz-label-sheet:last-child {
+            break-after: auto !important;
+            page-break-after: auto !important;
+          }
+
+          .trackerz-manual-label {
+            width: 64mm !important;
+            height: 34mm !important;
+            min-width: 64mm !important;
+            min-height: 34mm !important;
+
+            box-sizing: border-box !important;
+
+            /*
+             * Border is INSIDE the label.
+             */
+            border:
+              0.25mm solid #111827 !important;
+
+            border-radius: 1.2mm !important;
+
+            padding: 1.8mm !important;
+
+            overflow: hidden !important;
+
+            background: #ffffff !important;
+
+            break-inside: avoid !important;
+            page-break-inside: avoid !important;
+          }
+
+          @media print {
+
+            @page {
+              size: A4 portrait;
+              margin: 0 !important;
+            }
+
+            html,
+            body {
+              width: 210mm !important;
+              height: 297mm !important;
+
+              margin: 0 !important;
+              padding: 0 !important;
+
+              background: #ffffff !important;
+            }
+
+            body * {
+              visibility: hidden !important;
+            }
+
+            .trackerz-manual-print,
+            .trackerz-manual-print * {
+              visibility: visible !important;
+            }
+
+            .trackerz-manual-print {
+              position: absolute !important;
+
+              left: 0 !important;
+              top: 0 !important;
+
+              width: 210mm !important;
+              height: 297mm !important;
+
+              margin: 0 !important;
+              padding: 0 !important;
+
+              overflow-y: visible !important;
+              overflow-x: hidden !important;
+
+              background: #ffffff !important;
+            }
+
+            .trackerz-print-controls {
+              display: none !important;
+            }
+
+            .trackerz-label-sheet {
+              position: relative !important;
+
+              width: 210mm !important;
+              height: 297mm !important;
+
+              min-height: 297mm !important;
+
+              display: grid !important;
+
+              grid-template-columns:
+                64mm 64mm 64mm !important;
+
+              grid-template-rows:
+                repeat(8, 34mm) !important;
+
+              column-gap: 3mm !important;
+              row-gap: 0mm !important;
+
+              /*
+               * Exact horizontal geometry:
+               * 6 + 64 + 3 + 64 + 3 + 64 + 6 = 210mm
+               *
+               * Vertical:
+               * 12 + (8 × 34) = 284mm
+               * Remaining bottom = 13mm.
+               */
+              padding:
+                12mm 6mm 13mm 6mm !important;
+
+              margin: 0 !important;
+
+              box-sizing: border-box !important;
+
+              justify-content: start !important;
+              align-content: start !important;
+
+              gap: 0 3mm !important;
+
+              background: #ffffff !important;
+            }
+
+            .trackerz-manual-label {
+              width: 64mm !important;
+              height: 34mm !important;
+
+              box-sizing: border-box !important;
+
+              /*
+               * Keep every visible mark inside the
+               * physical 64 × 34mm peel area.
+               */
+              border:
+                0.25mm solid #111827 !important;
+
+              border-radius: 1.2mm !important;
+
+              padding: 1.8mm !important;
+
+              overflow: hidden !important;
+
+              break-inside: avoid !important;
+              page-break-inside: avoid !important;
+
+              background: #ffffff !important;
+            }
+          }
+        `}
+      </style>
+
+      {/* =================================================
+          TOP BAR
+      ================================================= */}
+
+      <header
+        className="topbar"
         style={{
-          marginBottom: "25px",
+          marginBottom:
+            "12px",
         }}
       >
-        <p
-          style={{
-            margin: 0,
-            fontSize: "12px",
-            fontWeight: "700",
-            letterSpacing: "1px",
-            color: "#64748b",
-          }}
-        >
-          TRACKERZ PRODUCTION
-        </p>
+        <div>
+          <p className="eyebrow">
+            TRACKERZ PRODUCTION
+          </p>
 
-        <h2
-          style={{
-            margin: "6px 0",
-          }}
-        >
-          Cutlist Import
-        </h2>
-
-        <p
-          style={{
-            margin: 0,
-            color: "#64748b",
-          }}
-        >
-          Import the production cutlist, generate QR data and
-          release the panels for packing tracking.
-        </p>
-      </div>
-
-      {/* MESSAGES */}
-
-      {error && (
-        <div
-          style={{
-            background: "#fef2f2",
-            border: "1px solid #fecaca",
-            color: "#b91c1c",
-            padding: "12px 15px",
-            borderRadius: "8px",
-            marginBottom: "18px",
-          }}
-        >
-          {error}
-        </div>
-      )}
-
-      {message && (
-        <div
-          style={{
-            background: "#f0fdf4",
-            border: "1px solid #bbf7d0",
-            color: "#166534",
-            padding: "12px 15px",
-            borderRadius: "8px",
-            marginBottom: "18px",
-          }}
-        >
-          {message}
-        </div>
-      )}
-
-      {/* SITE INFORMATION */}
-
-      <section
-        style={{
-          background: "white",
-          border: "1px solid #e2e8f0",
-          borderRadius: "12px",
-          padding: "22px",
-          marginBottom: "20px",
-        }}
-      >
-        <div
-          style={{
-            marginBottom: "18px",
-          }}
-        >
-          <h3
+          <h2
             style={{
-              margin: 0,
+              marginBottom:
+                "3px",
             }}
           >
-            Site Information
-          </h3>
+            Cutlist Import
+          </h2>
 
-          <p
-            style={{
-              margin: "5px 0 0",
-              color: "#64748b",
-              fontSize: "14px",
-            }}
-          >
-            Enter the site details before uploading the cutlist.
+          <p className="subtitle">
+            Create site → Upload cutlist → Release to production
           </p>
         </div>
 
         <div
           style={{
-            display: "grid",
-            gridTemplateColumns:
-              "repeat(auto-fit, minmax(220px, 1fr))",
-            gap: "16px",
+            display:
+              "flex",
+            alignItems:
+              "center",
+            gap: "8px",
           }}
         >
-          {/* SITE NAME */}
-
-          <div>
-            <label
+          {released && (
+            <span
               style={{
-                display: "block",
-                marginBottom: "6px",
-                fontWeight: "600",
+                padding:
+                  "7px 11px",
+                borderRadius:
+                  "999px",
+                background:
+                  "#dcfce7",
+                color:
+                  "#166534",
+                fontSize:
+                  "12px",
+                fontWeight:
+                  "700",
               }}
             >
+              ✓ Released
+            </span>
+          )}
+
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() =>
+              setActivePage?.(
+                "sites"
+              )
+            }
+          >
+            Sites
+          </button>
+        </div>
+      </header>
+
+      {/* =================================================
+          SITE INFORMATION
+      ================================================= */}
+
+      <section
+        className="panel"
+        style={{
+          padding:
+            "14px",
+        }}
+      >
+        <div
+          style={{
+            display:
+              "grid",
+            gridTemplateColumns:
+              "minmax(180px, 1.2fr) minmax(180px, 1fr) minmax(150px, .8fr) minmax(200px, 1.5fr)",
+            gap:
+              "10px",
+            alignItems:
+              "end",
+          }}
+        >
+          {/* SITE */}
+
+          <label>
+            <span
+              style={
+                labelStyle
+              }
+            >
               Site Name *
-            </label>
+            </span>
 
             <input
               type="text"
-              value={siteName}
-              onChange={(e) =>
-                setSiteName(e.target.value)
+              value={
+                siteName
               }
-              placeholder="Example: Anna Nagar"
-              disabled={!!site}
-              style={inputStyle}
+              onChange={(
+                event
+              ) => {
+                setSiteName(
+                  event.target
+                    .value
+                );
+
+                setReleased(
+                  false
+                );
+
+                setReleasedSite(
+                  null
+                );
+              }}
+              disabled={
+                released ||
+                importing
+              }
+              placeholder="Example: Siva Kitchen"
+              style={
+                inputStyle
+              }
             />
-          </div>
+          </label>
 
           {/* CLIENT */}
 
-          <div>
-            <label
-              style={{
-                display: "block",
-                marginBottom: "6px",
-                fontWeight: "600",
-              }}
+          <label>
+            <span
+              style={
+                labelStyle
+              }
             >
               Client Name *
-            </label>
+            </span>
 
             <input
               type="text"
-              value={clientName}
-              onChange={(e) =>
-                setClientName(e.target.value)
+              value={
+                clientName
               }
-              placeholder="Example: ABC Interiors"
-              disabled={!!site}
-              style={inputStyle}
+              onChange={(
+                event
+              ) => {
+                setClientName(
+                  event.target
+                    .value
+                );
+
+                setReleased(
+                  false
+                );
+
+                setReleasedSite(
+                  null
+                );
+              }}
+              disabled={
+                released ||
+                importing
+              }
+              placeholder="Client name"
+              style={
+                inputStyle
+              }
             />
-          </div>
+          </label>
 
           {/* CONTACT */}
 
-          <div>
-            <label
-              style={{
-                display: "block",
-                marginBottom: "6px",
-                fontWeight: "600",
-              }}
+          <label>
+            <span
+              style={
+                labelStyle
+              }
             >
               Contact
-            </label>
+            </span>
 
             <input
               type="text"
-              value={contact}
-              onChange={(e) =>
-                setContact(e.target.value)
+              value={
+                contact
               }
-              placeholder="Phone number"
-              disabled={!!site}
-              style={inputStyle}
+              onChange={(
+                event
+              ) =>
+                setContact(
+                  event.target
+                    .value
+                )
+              }
+              disabled={
+                released ||
+                importing
+              }
+              placeholder="Phone"
+              style={
+                inputStyle
+              }
             />
-          </div>
+          </label>
 
           {/* ADDRESS */}
 
-          <div>
-            <label
-              style={{
-                display: "block",
-                marginBottom: "6px",
-                fontWeight: "600",
-              }}
+          <label>
+            <span
+              style={
+                labelStyle
+              }
             >
               Address
-            </label>
+            </span>
 
             <input
               type="text"
-              value={address}
-              onChange={(e) =>
-                setAddress(e.target.value)
+              value={
+                address
+              }
+              onChange={(
+                event
+              ) =>
+                setAddress(
+                  event.target
+                    .value
+                )
+              }
+              disabled={
+                released ||
+                importing
               }
               placeholder="Site address"
-              disabled={!!site}
-              style={inputStyle}
+              style={
+                inputStyle
+              }
             />
-          </div>
+          </label>
         </div>
-      </section>
 
-      {/* UPLOAD */}
+        {/* =================================================
+            UPLOAD + SUMMARY
+        ================================================= */}
 
-      {!site && (
-        <section
+        <div
           style={{
-            background: "white",
-            border: "1px solid #e2e8f0",
-            borderRadius: "12px",
-            padding: "25px",
-            marginBottom: "20px",
+            display:
+              "grid",
+            gridTemplateColumns:
+              "minmax(280px, 1fr) auto auto auto",
+            gap:
+              "10px",
+            alignItems:
+              "center",
+            marginTop:
+              "12px",
           }}
         >
-          <h3
-            style={{
-              marginTop: 0,
-            }}
-          >
-            Upload Cutlist
-          </h3>
-
-          <p
-            style={{
-              color: "#64748b",
-              fontSize: "14px",
-            }}
-          >
-            Upload the Excel cutlist received from the
-            cutting machine software.
-          </p>
+          {/* FILE */}
 
           <label
             style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "8px",
-              padding: "12px 18px",
-              borderRadius: "8px",
-              background: "#111827",
-              color: "white",
-              cursor: "pointer",
-              fontWeight: "600",
+              ...cardStyle,
+              padding:
+                "10px 12px",
+              cursor:
+                released
+                  ? "default"
+                  : "pointer",
             }}
           >
-            ⇧ Upload Excel
+            <span
+              style={
+                labelStyle
+              }
+            >
+              Excel Cutlist
+            </span>
 
             <input
               type="file"
               accept=".xlsx,.xls,.csv"
-              onChange={handleFileUpload}
+              onChange={(
+                event
+              ) => {
+                setReleased(
+                  false
+                );
+
+                setReleasedSite(
+                  null
+                );
+
+                handleUpload(
+                  event
+                );
+              }}
+              disabled={
+                released ||
+                importing
+              }
               style={{
-                display: "none",
+                width:
+                  "100%",
+                fontSize:
+                  "13px",
               }}
             />
+
+            {importFile && (
+              <div
+                style={{
+                  marginTop:
+                    "5px",
+                  fontSize:
+                    "11px",
+                  color:
+                    "#4b5563",
+                  overflow:
+                    "hidden",
+                  textOverflow:
+                    "ellipsis",
+                  whiteSpace:
+                    "nowrap",
+                }}
+              >
+                📄{" "}
+                {
+                  importFile.name
+                }
+              </div>
+            )}
           </label>
 
-          {isProcessing && (
-            <span
-              style={{
-                marginLeft: "15px",
-                color: "#64748b",
-              }}
-            >
-              Processing cutlist...
-            </span>
-          )}
+          {/* ROWS */}
 
-          {fileName && (
-            <div
-              style={{
-                marginTop: "15px",
-                color: "#475569",
-              }}
-            >
-              File: <strong>{fileName}</strong>
-            </div>
-          )}
-        </section>
-      )}
-
-      {/* SITE SUMMARY */}
-
-      {site && (
-        <section
-          style={{
-            background: "white",
-            border: "1px solid #e2e8f0",
-            borderRadius: "12px",
-            padding: "22px",
-            marginBottom: "20px",
-          }}
-        >
           <div
             style={{
-              display: "flex",
-              justifyContent: "space-between",
-              gap: "20px",
-              alignItems: "flex-start",
-              flexWrap: "wrap",
+              ...cardStyle,
+              minWidth:
+                "105px",
+              textAlign:
+                "center",
+              padding:
+                "10px 14px",
             }}
           >
-            <div>
-              <div
-                style={{
-                  fontSize: "12px",
-                  color: "#64748b",
-                  fontWeight: "700",
-                  letterSpacing: "0.8px",
-                }}
-              >
-                SITE
-              </div>
-
-              <h2
-                style={{
-                  margin: "5px 0",
-                }}
-              >
-                {site.siteName}
-              </h2>
-
-              <div
-                style={{
-                  color: "#64748b",
-                }}
-              >
-                Client: {site.clientName}
-              </div>
-
-              {site.contact && (
-                <div
-                  style={{
-                    color: "#64748b",
-                    marginTop: "3px",
-                  }}
-                >
-                  Contact: {site.contact}
-                </div>
-              )}
-            </div>
-
             <div
               style={{
-                display: "flex",
-                gap: "10px",
-                flexWrap: "wrap",
+                fontSize:
+                  "10px",
+                color:
+                  "#6b7280",
+                fontWeight:
+                  "700",
               }}
             >
-              <div style={summaryCard}>
-                <span>Panels</span>
-                <strong>{site.panelCount}</strong>
-              </div>
+              CUTLIST ROWS
+            </div>
 
-              <div style={summaryCard}>
-                <span>QR Ready</span>
-                <strong>{site.panelCount}</strong>
-              </div>
+            <strong
+              style={{
+                fontSize:
+                  "21px",
+              }}
+            >
+              {
+                rows.length
+              }
+            </strong>
+          </div>
 
-              <div style={summaryCard}>
-                <span>Status</span>
+          {/* PHYSICAL PANELS */}
+
+          <div
+            style={{
+              ...cardStyle,
+              minWidth:
+                "105px",
+              textAlign:
+                "center",
+              padding:
+                "10px 14px",
+            }}
+          >
+            <div
+              style={{
+                fontSize:
+                  "10px",
+                color:
+                  "#6b7280",
+                fontWeight:
+                  "700",
+              }}
+            >
+              QR READY
+            </div>
+
+            <strong
+              style={{
+                fontSize:
+                  "21px",
+                color:
+                  rows.length
+                    ? "#16a34a"
+                    : "#6b7280",
+              }}
+            >
+              {
+                physicalPanelCount
+              }
+            </strong>
+          </div>
+
+          {/* STATUS */}
+
+          <div
+            style={{
+              ...cardStyle,
+              minWidth:
+                "130px",
+              textAlign:
+                "center",
+              padding:
+                "10px 14px",
+            }}
+          >
+            <div
+              style={{
+                fontSize:
+                  "10px",
+                color:
+                  "#6b7280",
+                fontWeight:
+                  "700",
+              }}
+            >
+              STATUS
+            </div>
+
+            <strong
+              style={{
+                fontSize:
+                  "13px",
+                color:
+                  released
+                    ? "#15803d"
+                    : rows.length
+                      ? "#1d4ed8"
+                      : "#6b7280",
+              }}
+            >
+              {released
+                ? "RELEASED"
+                : rows.length
+                  ? "READY"
+                  : "WAITING"}
+            </strong>
+          </div>
+        </div>
+
+        {/* =================================================
+            PREVIEW
+        ================================================= */}
+
+        {rows.length > 0 && (
+          <div
+            style={{
+              marginTop:
+                "12px",
+              border:
+                "1px solid #e5e7eb",
+              borderRadius:
+                "9px",
+              overflow:
+                "hidden",
+            }}
+          >
+            <div
+              style={{
+                display:
+                  "flex",
+                alignItems:
+                  "center",
+                justifyContent:
+                  "space-between",
+                padding:
+                  "9px 12px",
+                background:
+                  "#f8fafc",
+                borderBottom:
+                  "1px solid #e5e7eb",
+              }}
+            >
+              <div>
                 <strong
                   style={{
-                    fontSize: "13px",
+                    fontSize:
+                      "13px",
                   }}
                 >
-                  {site.status}
+                  Cutlist Preview
                 </strong>
+
+                <span
+                  style={{
+                    marginLeft:
+                      "8px",
+                    fontSize:
+                      "11px",
+                    color:
+                      "#6b7280",
+                  }}
+                >
+                  First 8 rows shown
+                </span>
               </div>
-            </div>
-          </div>
-        </section>
-      )}
 
-      {/* ACTIONS */}
-
-      {rows.length > 0 && (
-        <section
-          style={{
-            background: "white",
-            border: "1px solid #e2e8f0",
-            borderRadius: "12px",
-            padding: "20px",
-            marginBottom: "20px",
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              gap: "12px",
-              alignItems: "center",
-              flexWrap: "wrap",
-            }}
-          >
-            <div>
-              <h3
+              <span
                 style={{
-                  margin: 0,
+                  fontSize:
+                    "11px",
+                  fontWeight:
+                    "700",
+                  color:
+                    "#1d4ed8",
                 }}
               >
-                Production Actions
-              </h3>
-
-              <p
-                style={{
-                  margin: "5px 0 0",
-                  color: "#64748b",
-                  fontSize: "14px",
-                }}
-              >
-                Download the QR-enabled cutlist and release
-                this site for packing.
-              </p>
+                {
+                  rows.length
+                }{" "}
+                rows loaded
+              </span>
             </div>
 
             <div
               style={{
-                display: "flex",
-                gap: "10px",
-                flexWrap: "wrap",
+                overflowX:
+                  "auto",
+                maxHeight:
+                  "285px",
+                overflowY:
+                  "auto",
               }}
             >
-              <button
-                onClick={handleDownload}
-                style={secondaryButton}
+              <table
+                style={{
+                  width:
+                    "100%",
+                  minWidth:
+                    "800px",
+                  borderCollapse:
+                    "collapse",
+                  fontSize:
+                    "11px",
+                }}
               >
-                ⇩ Download QR Cutlist
-              </button>
-
-              {!isReleased ? (
-                <button
-                  onClick={handleRelease}
-                  style={primaryButton}
-                >
-                  ✓ Release to Production
-                </button>
-              ) : (
-                <div
+                <thead
                   style={{
-                    padding: "11px 16px",
-                    background: "#f0fdf4",
-                    color: "#166534",
-                    border: "1px solid #bbf7d0",
-                    borderRadius: "8px",
-                    fontWeight: "700",
+                    position:
+                      "sticky",
+                    top:
+                      0,
+                    zIndex:
+                      1,
                   }}
                 >
-                  ✓ Released to Production
-                </div>
-              )}
-            </div>
-          </div>
-        </section>
-      )}
-
-      {/* PREVIEW */}
-
-      {rows.length > 0 && (
-        <section
-          style={{
-            background: "white",
-            border: "1px solid #e2e8f0",
-            borderRadius: "12px",
-            overflow: "hidden",
-          }}
-        >
-          <div
-            style={{
-              padding: "20px",
-              borderBottom: "1px solid #e2e8f0",
-            }}
-          >
-            <h3
-              style={{
-                margin: 0,
-              }}
-            >
-              Cutlist Preview
-            </h3>
-
-            <p
-              style={{
-                margin: "5px 0 0",
-                color: "#64748b",
-                fontSize: "14px",
-              }}
-            >
-              QR Data has been added as the final column.
-            </p>
-          </div>
-
-          <div
-            style={{
-              overflowX: "auto",
-              maxHeight: "500px",
-            }}
-          >
-            <table
-              style={{
-                width: "100%",
-                borderCollapse: "collapse",
-                fontSize: "13px",
-              }}
-            >
-              <thead>
-                <tr>
-                  {Object.keys(rows[0]).map(
-                    (column) => (
-                      <th
-                        key={column}
-                        style={tableHeaderStyle}
-                      >
-                        {column}
-                      </th>
+                  <tr>
+                    {Object.keys(
+                      rows[0]
                     )
-                  )}
-                </tr>
-              </thead>
-
-              <tbody>
-                {rows.slice(0, 100).map(
-                  (row, rowIndex) => (
-                    <tr key={rowIndex}>
-                      {Object.keys(rows[0]).map(
-                        (column) => (
-                          <td
-                            key={column}
+                      .slice(
+                        0,
+                        8
+                      )
+                      .map(
+                        (
+                          column
+                        ) => (
+                          <th
+                            key={
+                              column
+                            }
                             style={{
-                              padding: "10px",
+                              padding:
+                                "7px 8px",
+                              textAlign:
+                                "left",
+                              background:
+                                "#f1f5f9",
                               borderBottom:
-                                "1px solid #f1f5f9",
+                                "1px solid #e5e7eb",
                               whiteSpace:
                                 "nowrap",
                             }}
                           >
-                            {cleanText(
-                              row[column]
-                            )}
-                          </td>
+                            {
+                              column
+                            }
+                          </th>
                         )
                       )}
-                    </tr>
-                  )
-                )}
-              </tbody>
-            </table>
-          </div>
 
-          {rows.length > 100 && (
-            <div
-              style={{
-                padding: "12px 20px",
-                color: "#64748b",
-                fontSize: "13px",
-                borderTop: "1px solid #e2e8f0",
-              }}
-            >
-              Showing first 100 panels in preview.
-              All {rows.length} panels are included in the
-              downloaded Excel.
+                    <th
+                      style={{
+                        padding:
+                          "7px 8px",
+                        textAlign:
+                          "left",
+                        background:
+                          "#f1f5f9",
+                        borderBottom:
+                          "1px solid #e5e7eb",
+                        whiteSpace:
+                          "nowrap",
+                      }}
+                    >
+                      QR Data
+                    </th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {rows
+                    .slice(
+                      0,
+                      8
+                    )
+                    .map(
+                      (
+                        row,
+                        index
+                      ) => (
+                        <tr
+                          key={
+                            index
+                          }
+                        >
+                          {Object.keys(
+                            rows[0]
+                          )
+                            .slice(
+                              0,
+                              8
+                            )
+                            .map(
+                              (
+                                column
+                              ) => (
+                                <td
+                                  key={
+                                    column
+                                  }
+                                  style={{
+                                    padding:
+                                      "6px 8px",
+                                    borderBottom:
+                                      "1px solid #f1f5f9",
+                                    whiteSpace:
+                                      "nowrap",
+                                    maxWidth:
+                                      "180px",
+                                    overflow:
+                                      "hidden",
+                                    textOverflow:
+                                      "ellipsis",
+                                  }}
+                                >
+                                  {cleanText(
+                                    row[
+                                      column
+                                    ]
+                                  )}
+                                </td>
+                              )
+                            )}
+
+                          <td
+                            style={{
+                              padding:
+                                "6px 8px",
+                              borderBottom:
+                                "1px solid #f1f5f9",
+                              whiteSpace:
+                                "nowrap",
+                              fontFamily:
+                                "monospace",
+                              fontWeight:
+                                "600",
+                            }}
+                          >
+                            {
+                              getRowQr(
+                                index
+                              )
+                            }
+                          </td>
+                        </tr>
+                      )
+                    )}
+                </tbody>
+              </table>
             </div>
-          )}
-        </section>
-      )}
 
-      {/* RESET */}
+            {rows.length > 8 && (
+              <div
+                style={{
+                  padding:
+                    "8px 12px",
+                  fontSize:
+                    "11px",
+                  color:
+                    "#64748b",
+                  borderTop:
+                    "1px solid #e5e7eb",
+                }}
+              >
+                Showing first 8 rows.
+                All{" "}
+                {
+                  rows.length
+                }{" "}
+                rows will be imported.
+              </div>
+            )}
+          </div>
+        )}
 
-      {site && (
+        {/* =================================================
+            ACTIONS
+        ================================================= */}
+
         <div
           style={{
-            marginTop: "20px",
-            display: "flex",
-            justifyContent: "flex-end",
+            display:
+              "flex",
+            alignItems:
+              "center",
+            gap:
+              "9px",
+            flexWrap:
+              "wrap",
+            marginTop:
+              "12px",
+            paddingTop:
+              "12px",
+            borderTop:
+              "1px solid #eef0f3",
           }}
         >
+          {/* RELEASE */}
+
           <button
-            onClick={handleReset}
+            type="button"
+            className="primary-button"
+            disabled={
+              importing ||
+              released ||
+              !siteName.trim() ||
+              !clientName.trim() ||
+              !rows.length
+            }
+            onClick={
+              releaseToProduction
+            }
+          >
+            {importing
+              ? "Releasing..."
+              : released
+                ? "✓ Released to Production"
+                : "✓ Release to Production"}
+          </button>
+
+          {/* DOWNLOAD */}
+
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={
+              importing ||
+              !released ||
+              !rows.length
+            }
+            onClick={
+              downloadQrCutlist
+            }
             style={{
-              padding: "10px 15px",
-              borderRadius: "8px",
-              border: "1px solid #cbd5e1",
-              background: "white",
-              cursor: "pointer",
-              fontWeight: "600",
-              color: "#475569",
+              border:
+                released
+                  ? "1px solid #16a34a"
+                  : undefined,
+
+              color:
+                released
+                  ? "#15803d"
+                  : undefined,
+
+              fontWeight:
+                released
+                  ? "700"
+                  : undefined,
             }}
           >
-            Import Another Site
+            ↓ Download QR Cutlist
           </button>
+
+          {/* MANUAL LABELS */}
+
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={
+              importing ||
+              !rows.length ||
+              manualQrLoading
+            }
+            onClick={
+              openManualQrPrint
+            }
+          >
+            {manualQrLoading
+              ? "Generating..."
+              : "▣ Manual QR Labels"}
+          </button>
+
+          {/* CLEAR */}
+
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={
+              importing
+            }
+            onClick={
+              clearCutlist
+            }
+          >
+            Clear
+          </button>
+
+          <div
+            style={{
+              marginLeft:
+                "auto",
+              fontSize:
+                "11px",
+              color:
+                "#6b7280",
+            }}
+          >
+            {released
+              ? "✓ Site created and released to production"
+              : "Enter site + client → upload cutlist → release"}
+          </div>
+        </div>
+
+        {/* =================================================
+            RELEASE SUCCESS
+        ================================================= */}
+
+        {released &&
+          releasedSite && (
+            <div
+              style={{
+                marginTop:
+                  "10px",
+                padding:
+                  "10px 12px",
+                borderRadius:
+                  "8px",
+                border:
+                  "1px solid #bbf7d0",
+                background:
+                  "#f0fdf4",
+                color:
+                  "#166534",
+                fontSize:
+                  "13px",
+                fontWeight:
+                  "700",
+              }}
+            >
+              ✓ Site created, released to production
+
+              <span
+                style={{
+                  marginLeft:
+                    "8px",
+                  fontWeight:
+                    "500",
+                }}
+              >
+                —
+                {
+                  releasedSite.site_name
+                }
+              </span>
+            </div>
+          )}
+      </section>
+
+      {/* =================================================
+          MANUAL QR PRINT SCREEN
+      ================================================= */}
+
+      {showManualPrint && (
+        <div
+          className="trackerz-manual-print"
+          style={{
+            position:
+              "fixed",
+            inset: 0,
+            zIndex:
+              99999,
+            background:
+              "#ffffff",
+            overflowY:
+              "auto",
+            padding:
+              "18px",
+          }}
+        >
+          {/* PRINT CONTROLS */}
+
+          <div
+            className="trackerz-print-controls"
+            style={{
+              display:
+                "flex",
+              alignItems:
+                "center",
+              justifyContent:
+                "space-between",
+              gap:
+                "12px",
+              marginBottom:
+                "16px",
+              paddingBottom:
+                "10px",
+              borderBottom:
+                "1px solid #e5e7eb",
+              position:
+                "sticky",
+              top: 0,
+              background:
+                "#ffffff",
+              zIndex:
+                10,
+            }}
+          >
+            <div>
+              <strong
+                style={{
+                  fontSize:
+                    "16px",
+                }}
+              >
+                Manual QR Labels
+              </strong>
+
+              <div
+                style={{
+                  marginTop:
+                    "3px",
+                  fontSize:
+                    "12px",
+                  color:
+                    "#64748b",
+                }}
+              >
+                A4 • 24 labels per sheet •
+                64 × 34 mm • 3 × 8
+              </div>
+            </div>
+
+            <div
+              style={{
+                display:
+                  "flex",
+                gap:
+                  "8px",
+              }}
+            >
+              <button
+                type="button"
+                className="primary-button"
+                onClick={
+                  downloadManualQrPdf
+                }
+              >
+                ↓ Download PDF
+              </button>
+
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={
+                  printManualQrLabels
+                }
+              >
+                🖨 Print Labels
+              </button>
+
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={
+                  closeManualQrPrint
+                }
+              >
+                Close
+              </button>
+            </div>
+          </div>
+
+          {/* LABEL SHEET */}
+
+          {Array.from(
+            {
+              length: Math.ceil(
+                manualLabels.length / 24
+              ),
+            },
+            (_, pageIndex) => {
+              const pageLabels =
+                manualLabels.slice(
+                  pageIndex * 24,
+                  pageIndex * 24 + 24
+                );
+
+              return (
+                <div
+                  key={`manual-qr-page-${pageIndex}`}
+                  className="trackerz-label-sheet"
+                >
+                  {pageLabels.map(
+(label) => (
+                <div
+                  key={label.qrData}
+                  className="trackerz-manual-label"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "2mm",
+                  }}
+                >
+                  {/* SMALL QR - safely inside peel area */}
+                  <div
+                    style={{
+                      width: "14mm",
+                      height: "14mm",
+                      flex: "0 0 14mm",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      overflow: "hidden",
+                    }}
+                  >
+                    <img
+                      src={label.qrImage}
+                      alt={label.qrData}
+                      style={{
+                        width: "14mm",
+                        height: "14mm",
+                        objectFit: "contain",
+                        display: "block",
+                      }}
+                    />
+                  </div>
+
+                  {/* COMPACT DETAILS */}
+                  <div
+                    style={{
+                      minWidth: 0,
+                      flex: 1,
+                      height: "100%",
+                      overflow: "hidden",
+                      display: "flex",
+                      flexDirection: "column",
+                      justifyContent: "center",
+                      lineHeight: 1.05,
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: "6.2px",
+                        fontWeight: 900,
+                        letterSpacing: "0.3px",
+                        color: "#111827",
+                      }}
+                    >
+                      TRACKERZ
+                    </div>
+
+                    <div
+                      style={{
+                        fontSize: "10px",
+                        fontWeight: 900,
+                        marginTop: "0.25mm",
+                        color: "#111827",
+                      }}
+                    >
+                      {String(
+                        label.labelNumber
+                      ).padStart(4, "0")}
+                    </div>
+
+                    <div
+                      style={{
+                        fontSize: "5.6px",
+                        fontWeight: 800,
+                        marginTop: "0.45mm",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        color: "#111827",
+                      }}
+                    >
+                      PANEL: {label.panelName || "Panel"}
+                    </div>
+
+                    <div
+                      style={{
+                        fontSize: "5.2px",
+                        fontWeight: 700,
+                        marginTop: "0.35mm",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        color: "#111827",
+                      }}
+                    >
+                      SECTION: {label.sectionName || "-"}
+                    </div>
+
+                    <div
+                      style={{
+                        fontSize: "5.2px",
+                        fontWeight: 700,
+                        marginTop: "0.35mm",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        color: "#111827",
+                      }}
+                    >
+                      ROOM: {label.roomName || "-"}
+                    </div>
+
+                    <div
+                      style={{
+                        fontSize: "5.4px",
+                        fontWeight: 800,
+                        marginTop: "0.35mm",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        color: "#111827",
+                      }}
+                    >
+                      SIZE: L {label.length || "-"} ×
+                      W {label.width || "-"} ×
+                      T {label.thickness || "-"}
+                    </div>
+
+                    <div
+                      style={{
+                        fontSize: "5.1px",
+                        fontWeight: 700,
+                        marginTop: "0.35mm",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        color: "#111827",
+                      }}
+                    >
+                      MAT: {label.material || "-"}
+                    </div>
+
+                    <div
+                      style={{
+                        fontSize: "4.5px",
+                        marginTop: "0.3mm",
+                        fontFamily: "monospace",
+                        fontWeight: 800,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        color: "#111827",
+                      }}
+                    >
+                      {label.qrData}
+                    </div>
+                  </div>
+                </div>
+              )
+                  )}
+                </div>
+              );
+            }
+          )}
         </div>
       )}
-    </div>
+    </>
   );
 }
-
-// ---------------------------------------------------------
-// Styles
-// ---------------------------------------------------------
-
-const inputStyle = {
-  width: "100%",
-  boxSizing: "border-box",
-  padding: "11px 12px",
-  border: "1px solid #cbd5e1",
-  borderRadius: "8px",
-  outline: "none",
-  fontSize: "14px",
-};
-
-const primaryButton = {
-  padding: "11px 17px",
-  border: "none",
-  borderRadius: "8px",
-  background: "#111827",
-  color: "white",
-  cursor: "pointer",
-  fontWeight: "700",
-};
-
-const secondaryButton = {
-  padding: "11px 17px",
-  border: "1px solid #cbd5e1",
-  borderRadius: "8px",
-  background: "white",
-  color: "#334155",
-  cursor: "pointer",
-  fontWeight: "700",
-};
-
-const summaryCard = {
-  minWidth: "100px",
-  padding: "12px 15px",
-  background: "#f8fafc",
-  border: "1px solid #e2e8f0",
-  borderRadius: "8px",
-  display: "flex",
-  flexDirection: "column",
-  gap: "4px",
-};
-
-const tableHeaderStyle = {
-  position: "sticky",
-  top: 0,
-  background: "#f8fafc",
-  padding: "11px 10px",
-  textAlign: "left",
-  borderBottom: "1px solid #e2e8f0",
-  fontSize: "12px",
-  color: "#475569",
-  whiteSpace: "nowrap",
-};
-
-export default CutlistImport;

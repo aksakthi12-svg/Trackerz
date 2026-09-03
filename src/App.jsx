@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
+import QRCode from "qrcode";
+import { jsPDF } from "jspdf";
 
 import { supabase } from "./supabaseClient";
 import Login from "./Login";
 
 import Projects from "./pages/Projects";
+import CutlistImport from "./CutlistImport";
 import QRTracking from "./QRTracking";
 import Production from "./Production";
 import Dispatch from "./Dispatch";
@@ -1316,137 +1319,171 @@ function App() {
     setMessage("");
 
     try {
-      const rowsToInsert =
-        importRows.map(
-          (row, index) => {
-            const assemblyLabel =
-              valueFromRow(row, [
-                "Assembly Label",
-                "assembly_label",
-                "Assembly",
-              ]);
+      /*
+       * IMPORTANT:
+       * Quantity is now treated as the number of
+       * physical panels.
+       *
+       * Example:
+       * Quantity = 3
+       * -> 3 separate rows in panels table
+       * -> 3 unique QR codes
+       * -> quantity = 1 on each physical panel
+       *
+       * No database structure is changed.
+       */
+      const rowsToInsert = [];
 
-            const sectionName =
-              valueFromRow(row, [
-                "Section Name",
-                "section_name",
-                "Section",
-              ]);
+      let physicalIndex = 0;
 
-            const cabinetName =
-              valueFromRow(row, [
-                "Cabinet Name",
-                "cabinet_name",
-                "Cabinet",
-              ]);
+      importRows.forEach(
+        (row, index) => {
+          const assemblyLabel =
+            valueFromRow(row, [
+              "Assembly Label",
+              "assembly_label",
+              "Assembly",
+            ]);
 
-            const roomName =
-              valueFromRow(row, [
-                "Room Name",
-                "room_name",
-                "Room",
-              ]);
+          const sectionName =
+            valueFromRow(row, [
+              "Section Name",
+              "section_name",
+              "Section",
+            ]);
 
-            const material =
-              valueFromRow(row, [
-                "Material",
-                "material",
-              ]);
+          const cabinetName =
+            valueFromRow(row, [
+              "Cabinet Name",
+              "cabinet_name",
+              "Cabinet",
+            ]);
 
-            const fbName =
-              valueFromRow(row, [
-                "FB Name",
-                "fb_name",
-              ]);
+          const roomName =
+            valueFromRow(row, [
+              "Room Name",
+              "room_name",
+              "Room",
+            ]);
 
-            const customer =
-              valueFromRow(row, [
-                "Customer",
-                "customer",
-              ]);
+          const material =
+            valueFromRow(row, [
+              "Material",
+              "material",
+            ]);
 
-            const remark =
-              valueFromRow(row, [
-                "Remark",
-                "remark",
-              ]);
+          const fbName =
+            valueFromRow(row, [
+              "FB Name",
+              "fb_name",
+            ]);
 
-            const panelName =
-              assemblyLabel ||
-              fbName ||
-              sectionName ||
-              valueFromRow(row, [
-                "Panel",
-                "Panel Name",
-                "panel",
-                "panel_name",
-                "Part",
-                "Part No",
-                "Name",
-                "Description",
-              ]) ||
-              `Panel-${index + 1}`;
+          const customer =
+            valueFromRow(row, [
+              "Customer",
+              "customer",
+            ]);
 
-            const length =
-              numberFromRow(row, [
-                "FB Length",
-                "Length",
-                "length",
-                "Len",
-                "L",
-              ]);
+          const remark =
+            valueFromRow(row, [
+              "Remark",
+              "remark",
+            ]);
 
-            const width =
-              numberFromRow(row, [
-                "FB Width",
-                "Width",
-                "width",
-                "Wid",
-                "W",
-              ]);
+          const panelName =
+            assemblyLabel ||
+            fbName ||
+            sectionName ||
+            valueFromRow(row, [
+              "Panel",
+              "Panel Name",
+              "panel",
+              "panel_name",
+              "Part",
+              "Part No",
+              "Name",
+              "Description",
+            ]) ||
+            `Panel-${index + 1}`;
 
-            const thickness =
-              numberFromRow(row, [
-                "Thickness",
-                "thickness",
-                "Thk",
-                "T",
-              ]);
+          const length =
+            numberFromRow(row, [
+              "FB Length",
+              "Length",
+              "length",
+              "Len",
+              "L",
+            ]);
 
-            const quantityValue =
-              numberFromRow(row, [
-                "Quantity",
-                "Qty",
-                "quantity",
-                "count",
-              ]);
+          const width =
+            numberFromRow(row, [
+              "FB Width",
+              "Width",
+              "width",
+              "Wid",
+              "W",
+            ]);
 
-            const quantity =
-              quantityValue === null
-                ? 1
-                : quantityValue;
+          const thickness =
+            numberFromRow(row, [
+              "Thickness",
+              "thickness",
+              "Thk",
+              "T",
+            ]);
 
-            const cleanSiteName =
-              String(
-                activeSite.site_name
+          const quantityValue =
+            numberFromRow(row, [
+              "Quantity",
+              "Qty",
+              "quantity",
+              "count",
+            ]);
+
+          const quantity =
+            quantityValue === null
+              ? 1
+              : Math.max(
+                  1,
+                  Math.floor(
+                    Number(
+                      quantityValue
+                    )
+                  )
+                );
+
+          const cleanSiteName =
+            String(
+              activeSite.site_name
+            )
+              .trim()
+              .replace(
+                /[^a-zA-Z0-9]+/g,
+                "-"
               )
-                .trim()
-                .replace(
-                  /[^a-zA-Z0-9]+/g,
-                  "-"
-                )
-                .replace(
-                  /^-+|-+$/g,
-                  ""
-                )
-                .toUpperCase();
+              .replace(
+                /^-+|-+$/g,
+                ""
+              )
+              .toUpperCase();
+
+          /*
+           * Expand one Excel row into one database
+           * record for every physical panel.
+           */
+          for (
+            let copy = 1;
+            copy <= quantity;
+            copy++
+          ) {
+            physicalIndex += 1;
 
             const qrData =
               `TRK-${cleanSiteName}-${String(
-                index + 1
+                physicalIndex
               ).padStart(4, "0")}`;
 
-            return {
+            rowsToInsert.push({
               site_id:
                 activeSite.id,
 
@@ -1465,8 +1502,12 @@ function App() {
               thickness:
                 thickness,
 
+              /*
+               * Each database row represents ONE
+               * physical panel.
+               */
               quantity:
-                quantity,
+                1,
 
               status:
                 "Pending",
@@ -1476,9 +1517,10 @@ function App() {
 
               qr_data:
                 String(qrData),
-            };
+            });
           }
-        );
+        }
+      );
 
       let insertedTotal = 0;
 
@@ -1515,15 +1557,13 @@ function App() {
           batch.length;
       }
 
+      /*
+       * Because every inserted database row now
+       * represents exactly ONE physical panel,
+       * insertedTotal is also the physical panel count.
+       */
       const importedQuantity =
-        rowsToInsert.reduce(
-          (sum, panel) =>
-            sum +
-            Number(
-              panel.quantity || 1
-            ),
-          0
-        );
+        insertedTotal;
 
       const currentSitePanelCount =
         getSitePanelCount(
@@ -1576,7 +1616,11 @@ function App() {
       await loadAllData();
 
       setMessage(
-        `${insertedTotal} cutlist rows imported successfully.`
+        `${insertedTotal} physical panel${
+          insertedTotal === 1
+            ? ""
+            : "s"
+        } imported successfully.`
       );
 
       return {
@@ -1849,6 +1893,10 @@ function App() {
       page === "sites"
     ) {
       setSelectedSite(null);
+
+      if (page === "sites") {
+        setDashboardTab("active");
+      }
     }
 
     setError("");
@@ -2577,15 +2625,46 @@ function App() {
   /* ======================================================
      SITES PAGE
 
-     READ-ONLY SITE LIST:
-     - Shows site information in one line/table row
-     - No Open Site action
-     - No panel tracking here
-     - No pack/unpack actions here
-     - Delete Site is the only action
+     ACTIVE / COMPLETED:
+     - Active = site is not fully packed and dispatched
+     - Completed = all panels packed AND all packets dispatched
+     - Status column removed; Trackerz determines the status
+     - Open Site allows access to site details and downloads
   ====================================================== */
 
   function renderSitesPage() {
+    const activeSites = sites.filter((site) => {
+      const progress = getSiteProgress(site);
+      const packetSummary = getSitePacketSummary(site);
+
+      const completed =
+        progress.total > 0 &&
+        progress.percentage === 100 &&
+        packetSummary.totalPackets > 0 &&
+        packetSummary.dispatchedPackets >=
+          packetSummary.totalPackets;
+
+      return !completed;
+    });
+
+    const completedSites = sites.filter((site) => {
+      const progress = getSiteProgress(site);
+      const packetSummary = getSitePacketSummary(site);
+
+      return (
+        progress.total > 0 &&
+        progress.percentage === 100 &&
+        packetSummary.totalPackets > 0 &&
+        packetSummary.dispatchedPackets >=
+          packetSummary.totalPackets
+      );
+    });
+
+    const displayedSites =
+      dashboardTab === "completed"
+        ? completedSites
+        : activeSites;
+
     return (
       <section>
 
@@ -2601,44 +2680,127 @@ function App() {
             </h2>
 
             <p>
-              View factory projects and site information.
+              View current active sites and completed sites.
             </p>
           </div>
 
-          <button
-            className="primary-button"
-            onClick={() =>
-              setShowAddSite(true)
-            }
-          >
-            + New Site
-          </button>
-
         </div>
 
-        {sites.length === 0 ? (
+        <div
+          style={{
+            width: "100%",
+            boxSizing: "border-box",
+            border: "1px solid #e5e7eb",
+            borderRadius: "12px",
+            background: "#ffffff",
+            padding: "0 18px",
+            marginBottom: "16px",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "stretch",
+              overflowX: "auto",
+            }}
+          >
+            <button
+              type="button"
+              onClick={() =>
+                setDashboardTab("active")
+              }
+              style={{
+                flex: "0 0 auto",
+                minWidth: "180px",
+                padding: "17px 22px 14px",
+                border: "none",
+                borderBottom:
+                  dashboardTab === "active"
+                    ? "4px solid #2563eb"
+                    : "4px solid transparent",
+                background: "transparent",
+                color:
+                  dashboardTab === "active"
+                    ? "#2563eb"
+                    : "#6b7280",
+                fontSize: "16px",
+                fontWeight:
+                  dashboardTab === "active"
+                    ? "700"
+                    : "600",
+                cursor: "pointer",
+                textAlign: "left",
+                whiteSpace: "nowrap",
+              }}
+            >
+              ▤ Active Sites ({activeSites.length})
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                setDashboardTab("completed")
+              }
+              style={{
+                flex: "0 0 auto",
+                minWidth: "190px",
+                padding: "17px 22px 14px",
+                border: "none",
+                borderBottom:
+                  dashboardTab === "completed"
+                    ? "4px solid #16a34a"
+                    : "4px solid transparent",
+                background: "transparent",
+                color:
+                  dashboardTab === "completed"
+                    ? "#16a34a"
+                    : "#6b7280",
+                fontSize: "16px",
+                fontWeight:
+                  dashboardTab === "completed"
+                    ? "700"
+                    : "600",
+                cursor: "pointer",
+                textAlign: "left",
+                whiteSpace: "nowrap",
+              }}
+            >
+              ✓ Completed Sites ({completedSites.length})
+            </button>
+          </div>
+        </div>
+
+        {displayedSites.length === 0 ? (
           <div className="empty-card">
 
             <div className="empty-icon">
-              ⌂
+              {dashboardTab === "completed"
+                ? "✓"
+                : "⌂"}
             </div>
 
             <h3>
-              No sites created
+              {dashboardTab === "completed"
+                ? "No completed sites"
+                : "No active sites"}
             </h3>
 
             <p>
-              Create your first factory site to begin tracking.
+              {dashboardTab === "completed"
+                ? "Sites will move here after all panels are packed and all packets are dispatched."
+                : "Create your first factory site to begin tracking."}
             </p>
 
-            <button
-              className="primary-button"
-              onClick={() =>
-                setShowAddSite(true)
-              }
-            >
-              + Create First Site
-            </button>
+            {dashboardTab === "active" && (
+              <button
+                className="primary-button"
+                onClick={() =>
+                  setShowAddSite(true)
+                }
+              >
+                + Create First Site
+              </button>
+            )}
 
           </div>
         ) : (
@@ -2658,7 +2820,7 @@ function App() {
               <table
                 style={{
                   width: "100%",
-                  minWidth: "900px",
+                  minWidth: "950px",
                   borderCollapse: "collapse",
                   background: "#ffffff",
                 }}
@@ -2667,7 +2829,8 @@ function App() {
                   <tr
                     style={{
                       background: "#f8fafc",
-                      borderBottom: "1px solid #e5e7eb",
+                      borderBottom:
+                        "1px solid #e5e7eb",
                     }}
                   >
                     <th
@@ -2701,7 +2864,13 @@ function App() {
                     <th
                       className="dashboard-th center"
                     >
-                      Status
+                      Panels
+                    </th>
+
+                    <th
+                      className="dashboard-th center"
+                    >
+                      Progress
                     </th>
 
                     <th
@@ -2713,9 +2882,9 @@ function App() {
                 </thead>
 
                 <tbody>
-                  {sites.map((site) => {
-                    const status =
-                      site.status || "Active";
+                  {displayedSites.map((site) => {
+                    const progress =
+                      getSiteProgress(site);
 
                     return (
                       <tr
@@ -2734,7 +2903,8 @@ function App() {
                             whiteSpace: "nowrap",
                           }}
                         >
-                          {site.site_name || "Unnamed Site"}
+                          {site.site_name ||
+                            "Unnamed Site"}
                         </td>
 
                         <td
@@ -2761,7 +2931,7 @@ function App() {
                           style={{
                             padding: "15px 16px",
                             color: "#4b5563",
-                            maxWidth: "320px",
+                            maxWidth: "300px",
                             overflow: "hidden",
                             textOverflow: "ellipsis",
                             whiteSpace: "nowrap",
@@ -2775,18 +2945,57 @@ function App() {
                           style={{
                             padding: "15px 16px",
                             textAlign: "center",
+                            fontWeight: "700",
                           }}
                         >
-                          <span
-                            className={
-                              String(status).toLowerCase() ===
-                              "active"
-                                ? "site-status active"
-                                : "site-status"
-                            }
+                          {progress.total}
+                        </td>
+
+                        <td
+                          style={{
+                            padding: "15px 16px",
+                            textAlign: "center",
+                            minWidth: "150px",
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "8px",
+                            }}
                           >
-                            {status}
-                          </span>
+                            <div
+                              style={{
+                                flex: "1",
+                                height: "7px",
+                                background: "#e5e7eb",
+                                borderRadius: "999px",
+                                overflow: "hidden",
+                              }}
+                            >
+                              <div
+                                style={{
+                                  height: "100%",
+                                  width: `${progress.percentage}%`,
+                                  background:
+                                    progress.percentage === 100
+                                      ? "#16a34a"
+                                      : "#2563eb",
+                                  borderRadius: "999px",
+                                }}
+                              />
+                            </div>
+
+                            <strong
+                              style={{
+                                minWidth: "35px",
+                                fontSize: "13px",
+                              }}
+                            >
+                              {progress.percentage}%
+                            </strong>
+                          </div>
                         </td>
 
                         <td
@@ -2796,6 +3005,19 @@ function App() {
                             whiteSpace: "nowrap",
                           }}
                         >
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() =>
+                              openSite(site)
+                            }
+                            style={{
+                              marginRight: "7px",
+                            }}
+                          >
+                            Open Site
+                          </button>
+
                           <button
                             type="button"
                             className="danger-button"
@@ -2820,6 +3042,444 @@ function App() {
   }
 
   /* ======================================================
+     SITE DOWNLOADS
+
+     Download the physical panel records already stored
+     in Supabase for the selected site.
+  ====================================================== */
+
+  function getPanelQrData(panel) {
+    return (
+      panel?.qr_data ||
+      panel?.qr_code ||
+      panel?.panel_code ||
+      ""
+    );
+  }
+
+  function getPanelLabelNumber(panel, fallbackIndex) {
+    const qrData = getPanelQrData(panel);
+    const match = String(qrData).match(/(\d+)$/);
+
+    if (match) {
+      return match[1];
+    }
+
+    return String(fallbackIndex + 1).padStart(4, "0");
+  }
+
+  function getCleanText(value) {
+    if (value === null || value === undefined) {
+      return "";
+    }
+
+    return String(value).trim();
+  }
+
+  function getSitePanelsInQrOrder(site) {
+    return getSitePanels(site)
+      .slice()
+      .sort((a, b) => {
+        const aNo = Number(
+          getPanelLabelNumber(a, 0)
+        );
+        const bNo = Number(
+          getPanelLabelNumber(b, 0)
+        );
+
+        return aNo - bNo;
+      });
+  }
+
+  function downloadSiteCutlist() {
+    if (!selectedSite) {
+      setError("Please select a site first.");
+      return;
+    }
+
+    const sitePanels =
+      getSitePanels(selectedSite);
+
+    if (!sitePanels.length) {
+      setError(
+        "There are no panel records available for this site to download."
+      );
+      return;
+    }
+
+    const rows = sitePanels.map(
+      (panel) => ({
+        "Site Name":
+          selectedSite.site_name || "",
+        "Client Name":
+          selectedSite.client_name || "",
+        "Material":
+          panel.material || "",
+        "Panel":
+          panel.panel_name || "",
+        "Length":
+          panel.length ?? "",
+        "Width":
+          panel.width ?? "",
+        "Thickness":
+          panel.thickness ?? "",
+        "Quantity":
+          1,
+        "QR Data":
+          getPanelQrData(panel),
+        "Status":
+          panel.status || "",
+        "Packed":
+          panel.packed === true
+            ? "Yes"
+            : "No",
+      })
+    );
+
+    const worksheet =
+      XLSX.utils.json_to_sheet(
+        rows
+      );
+
+    const workbook =
+      XLSX.utils.book_new();
+
+    XLSX.utils.book_append_sheet(
+      workbook,
+      worksheet,
+      "Cutlist"
+    );
+
+    const cleanSiteName =
+      String(
+        selectedSite.site_name ||
+          "SITE"
+      )
+        .trim()
+        .replace(
+          /[^a-zA-Z0-9]+/g,
+          "-"
+        )
+        .replace(
+          /^-+|-+$/g,
+          ""
+        )
+        .toUpperCase();
+
+    XLSX.writeFile(
+      workbook,
+      `${cleanSiteName}_Cutlist.xlsx`
+    );
+
+    setMessage(
+      "Site cutlist downloaded successfully."
+    );
+  }
+
+  async function downloadSiteManualQrPdf() {
+    if (!selectedSite) {
+      setError("Please select a site first.");
+      return;
+    }
+
+    const sitePanels =
+      getSitePanelsInQrOrder(
+        selectedSite
+      );
+
+    if (!sitePanels.length) {
+      setError(
+        "There are no panel records available for this site."
+      );
+      return;
+    }
+
+    setError("");
+    setMessage("");
+
+    try {
+      const pdf = new jsPDF({
+        orientation: "portrait",
+        unit: "mm",
+        format: [210, 297],
+        compress: true,
+      });
+
+      const PAGE_W = 210;
+      const PAGE_H = 297;
+      const LABEL_W = 64;
+      const LABEL_H = 34;
+      const LEFT = 6;
+      const TOP = 12;
+      const COL_GAP = 3;
+      const ROW_GAP = 0;
+      const BORDER_INSET = 0.45;
+      const QR = 14;
+
+      for (
+        let index = 0;
+        index < sitePanels.length;
+        index++
+      ) {
+        const panel =
+          sitePanels[index];
+
+        const indexOnPage =
+          index % 24;
+
+        const col =
+          indexOnPage % 3;
+
+        const row =
+          Math.floor(
+            indexOnPage / 3
+          );
+
+        if (
+          index > 0 &&
+          indexOnPage === 0
+        ) {
+          pdf.addPage(
+            [PAGE_W, PAGE_H],
+            "portrait"
+          );
+        }
+
+        const x =
+          LEFT +
+          col *
+            (LABEL_W +
+              COL_GAP);
+
+        const y =
+          TOP +
+          row *
+            (LABEL_H +
+              ROW_GAP);
+
+        const qrData =
+          getPanelQrData(panel);
+
+        if (!qrData) {
+          continue;
+        }
+
+        const qrImage =
+          await QRCode.toDataURL(
+            qrData,
+            {
+              errorCorrectionLevel:
+                "M",
+              margin: 1,
+              width: 220,
+            }
+          );
+
+        pdf.setLineWidth(0.25);
+
+        pdf.roundedRect(
+          x + BORDER_INSET,
+          y + BORDER_INSET,
+          LABEL_W -
+            BORDER_INSET * 2,
+          LABEL_H -
+            BORDER_INSET * 2,
+          1.2,
+          1.2,
+          "S"
+        );
+
+        pdf.addImage(
+          qrImage,
+          "PNG",
+          x + 2.2,
+          y + 9.2,
+          QR,
+          QR,
+          undefined,
+          "FAST"
+        );
+
+        const textX =
+          x + 18.5;
+
+        /* BRAND */
+        pdf.setFont(
+          "helvetica",
+          "bold"
+        );
+
+        pdf.setFontSize(5.5);
+
+        pdf.text(
+          "TRACKERZ",
+          textX,
+          y + 5.5
+        );
+
+        /* LABEL NUMBER */
+        pdf.setFontSize(8.5);
+
+        pdf.text(
+          getPanelLabelNumber(
+            panel,
+            index
+          ),
+          textX,
+          y + 10
+        );
+
+        /* PANEL NAME */
+        pdf.setFont(
+          "helvetica",
+          "normal"
+        );
+
+        pdf.setFontSize(5.2);
+
+        const panelName =
+          getCleanText(
+            panel.panel_name
+          ) || "Panel";
+
+        pdf.text(
+          pdf
+            .splitTextToSize(
+              panelName,
+              42
+            )
+            .slice(0, 1),
+          textX,
+          y + 14.2
+        );
+
+        /* SITE / CLIENT SECTION */
+        const section =
+          getCleanText(
+            panel.section_name ||
+              panel.section ||
+              panel.cabinet_name
+          );
+
+        if (section) {
+          pdf.setFontSize(4.8);
+
+          pdf.text(
+            pdf
+              .splitTextToSize(
+                section,
+                42
+              )
+              .slice(0, 1),
+            textX,
+            y + 18
+          );
+        }
+
+        /* SIZE + THICKNESS */
+        pdf.setFontSize(5.2);
+
+        const sizeText =
+          `L ${
+            getCleanText(
+              panel.length
+            ) || "-"
+          } × ` +
+          `W ${
+            getCleanText(
+              panel.width
+            ) || "-"
+          } × ` +
+          `T ${
+            getCleanText(
+              panel.thickness
+            ) || "-"
+          }`;
+
+        pdf.text(
+          pdf
+            .splitTextToSize(
+              sizeText,
+              42
+            )
+            .slice(0, 1),
+          textX,
+          y + 22
+        );
+
+        /* MATERIAL */
+        const material =
+          getCleanText(
+            panel.material
+          );
+
+        if (material) {
+          pdf.setFontSize(4.8);
+
+          pdf.text(
+            pdf
+              .splitTextToSize(
+                material,
+                42
+              )
+              .slice(0, 1),
+            textX,
+            y + 25.8
+          );
+        }
+
+        /* QR ID */
+        pdf.setFont(
+          "courier",
+          "normal"
+        );
+
+        pdf.setFontSize(4.2);
+
+        pdf.text(
+          qrData,
+          x + 2.2,
+          y + 30.8
+        );
+      }
+
+      const safeSite =
+        String(
+          selectedSite.site_name ||
+            "SITE"
+        )
+          .trim()
+          .replace(
+            /[^a-zA-Z0-9]+/g,
+            "-"
+          )
+          .replace(
+            /^-+|-+$/g,
+            ""
+          )
+          .toUpperCase();
+
+      pdf.save(
+        `${safeSite}_Manual_QR_Labels_24L.pdf`
+      );
+
+      setMessage(
+        "Manual QR label PDF downloaded successfully."
+      );
+    } catch (err) {
+      console.error(
+        "Site manual QR PDF error:",
+        err
+      );
+
+      setError(
+        err?.message ||
+          "Unable to create the Manual QR label PDF."
+      );
+    }
+  }
+
+  /* ======================================================
      SITE DETAILS
   ====================================================== */
 
@@ -2829,8 +3489,7 @@ function App() {
     }
 
     const percentage =
-      selectedSiteTotal >
-      0
+      selectedSiteTotal > 0
         ? Math.round(
             (selectedSitePacked /
               selectedSiteTotal) *
@@ -2870,17 +3529,34 @@ function App() {
 
           </div>
 
-          <div className="site-detail-actions">
+          <div
+            className="site-detail-actions"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              flexWrap: "wrap",
+              justifyContent:
+                "flex-end",
+            }}
+          >
 
             <button
               className="secondary-button"
-              onClick={() =>
-                setShowImport(
-                  true
-                )
+              onClick={
+                downloadSiteCutlist
               }
             >
-              Import Cutlist
+              ↓ Download Cutlist
+            </button>
+
+            <button
+              className="secondary-button"
+              onClick={
+                downloadSiteManualQrPdf
+              }
+            >
+              ↓ Download Manual QR Labels PDF
             </button>
 
             <button
@@ -2946,170 +3622,51 @@ function App() {
 
         </div>
 
-        <div className="section-header">
+        <div
+          style={{
+            marginTop: "18px",
+            padding: "18px",
+            border:
+              "1px solid #e5e7eb",
+            borderRadius: "10px",
+            background: "#ffffff",
+          }}
+        >
+          <h3
+            style={{
+              marginTop: 0,
+              marginBottom: "6px",
+            }}
+          >
+            Site Downloads
+          </h3>
 
-          <div>
-            <h2>
-              Panel Tracking
-            </h2>
+          <p
+            style={{
+              margin: 0,
+              color: "#64748b",
+              fontSize: "13px",
+            }}
+          >
+            Download the production
+            cutlist or regenerate the
+            24-label A4 Manual QR
+            Labels PDF for this site.
+          </p>
 
-            <p>
-              Track every panel belonging
-              to this site.
-            </p>
+          <div
+            style={{
+              marginTop: "12px",
+              fontSize: "13px",
+              color: "#475569",
+            }}
+          >
+            Packing progress:{" "}
+            <strong>
+              {percentage}%
+            </strong>
           </div>
-
-          <div className="packing-progress">
-            {percentage}% packed
-          </div>
-
         </div>
-
-        {selectedSitePanels.length ===
-        0 ? (
-          <div className="empty-card">
-
-            <div className="empty-icon">
-              ▤
-            </div>
-
-            <h3>
-              No panels uploaded
-            </h3>
-
-            <p>
-              Upload the site's Excel
-              cutlist to begin tracking.
-            </p>
-
-            <button
-              className="primary-button"
-              onClick={() =>
-                setShowImport(
-                  true
-                )
-              }
-            >
-              Import Cutlist
-            </button>
-
-          </div>
-        ) : (
-          <div className="panel-table-wrapper">
-
-            <table className="panel-table">
-
-              <thead>
-                <tr>
-                  <th>Panel</th>
-                  <th>Length</th>
-                  <th>Width</th>
-                  <th>Thickness</th>
-                  <th>Qty</th>
-                  <th>QR Data</th>
-                  <th>Status</th>
-                  <th>Action</th>
-                </tr>
-              </thead>
-
-              <tbody>
-
-                {selectedSitePanels.map(
-                  (panel) => {
-                    const packed =
-                      isPanelPacked(
-                        panel
-                      );
-
-                    return (
-                      <tr
-                        key={
-                          panel.id
-                        }
-                      >
-
-                        <td>
-                          <strong>
-                            {panel.panel_name ||
-                              panel.panel_no ||
-                              panel.name ||
-                              `Panel ${panel.id}`}
-                          </strong>
-                        </td>
-
-                        <td>
-                          {panel.length ??
-                            "-"}
-                        </td>
-
-                        <td>
-                          {panel.width ??
-                            "-"}
-                        </td>
-
-                        <td>
-                          {panel.thickness ??
-                            "-"}
-                        </td>
-
-                        <td>
-                          {panel.quantity ??
-                            1}
-                        </td>
-
-                        <td>
-                          <code>
-                            {panel.qr_data ||
-                              panel.qr_code ||
-                              panel.panel_code ||
-                              "-"}
-                          </code>
-                        </td>
-
-                        <td>
-                          <span
-                            className={
-                              packed
-                                ? "status-badge packed"
-                                : "status-badge pending"
-                            }
-                          >
-                            {packed
-                              ? "Packed"
-                              : "Pending"}
-                          </span>
-                        </td>
-
-                        <td>
-                          <button
-                            className={
-                              packed
-                                ? "small-button"
-                                : "small-button pack"
-                            }
-                            onClick={() =>
-                              togglePacked(
-                                panel
-                              )
-                            }
-                          >
-                            {packed
-                              ? "Unpack"
-                              : "Mark Packed"}
-                          </button>
-                        </td>
-
-                      </tr>
-                    );
-                  }
-                )}
-
-              </tbody>
-
-            </table>
-
-          </div>
-        )}
 
       </section>
     );
@@ -3626,7 +4183,7 @@ function App() {
       "cutlist"
     ) {
       return (
-        <CutlistImportPage
+        <CutlistImport
           selectedSite={
             selectedSite
           }
