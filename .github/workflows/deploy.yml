@@ -38,6 +38,18 @@ jobs:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
 
+      - name: Verify Supabase key configuration
+        env:
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          if [ -z "$VITE_SUPABASE_PUBLISHABLE_KEY" ]; then
+            echo "Supabase publishable key: MISSING"
+          else
+            echo "Supabase publishable key: PRESENT"
+            echo "Key prefix: ${VITE_SUPABASE_PUBLISHABLE_KEY:0:15}"
+            echo "Key length: ${#VITE_SUPABASE_PUBLISHABLE_KEY}"
+          fi
+
       - name: Setup GitHub Pages
         uses: actions/configure-pages@v5
 
