@@ -247,29 +247,108 @@ export default function CutlistImport({
      CUTLIST FIELD MAPPING
   ===================================================== */
 
-  function getPanelName(
-    row,
-    index
-  ) {
+  /* =====================================================
+     EXACT FACTORY FIELD MAPPING
+
+     FB Name        = individual FB / panel number
+     Assembly Label = cabinet number (#1, #2, #3...)
+     Cabinet Name   = actual cabinet name
+     Section Name   = actual section / panel name
+     Room Name      = room
+  ===================================================== */
+
+  function getFbName(row, index) {
+    const directFb = cleanText(
+      getValue(
+        row,
+        [
+          "FB Name",
+          "FB_Name",
+          "fb_name",
+          "FB",
+        ],
+        ""
+      )
+    );
+
+    if (/^\d+(?:\.\d+)?$/.test(directFb)) {
+      return directFb;
+    }
+
+    const assembly = cleanText(
+      getValue(
+        row,
+        [
+          "Assembly Label",
+          "assembly_label",
+          "Assembly",
+        ],
+        ""
+      )
+    );
+
+    if (/^\d+(?:\.\d+)?$/.test(assembly)) {
+      return assembly;
+    }
+
+    return directFb || `FB ${index + 1}`;
+  }
+
+  function getCabinetNumber(row) {
+    const cabinetName = cleanText(
+      getValue(
+        row,
+        [
+          "Cabinet Name",
+          "cabinet_name",
+          "Cabinet",
+        ],
+        ""
+      )
+    );
+
+    const cabinetMatch =
+      cabinetName.match(/(?:^|\D)(\d+)\s*$/);
+
+    if (cabinetMatch?.[1]) {
+      return `#${cabinetMatch[1]}`;
+    }
+
+    const assembly = cleanText(
+      getValue(
+        row,
+        [
+          "Assembly Label",
+          "assembly_label",
+          "Assembly",
+        ],
+        ""
+      )
+    );
+
+    if (/^#\s*\d+$/.test(assembly)) {
+      return assembly.replace(
+        /#\s*/,
+        "#"
+      );
+    }
+
+    if (/^\d+$/.test(assembly)) {
+      return `#${assembly}`;
+    }
+
+    return "";
+  }
+
+  function getCabinetName(row) {
     return getValue(
       row,
       [
-        "Assembly Label",
-        "Assembly",
-        "FB Name",
-        "FB_Name",
-        "Panel Name",
-        "Panel",
-        "Part Name",
-        "Part",
-        "Part No",
-        "Part Number",
-        "Item Name",
-        "Item",
-        "Description",
-        "Name",
+        "Cabinet Name",
+        "cabinet_name",
+        "Cabinet",
       ],
-      `Panel ${index + 1}`
+      ""
     );
   }
 
@@ -278,9 +357,8 @@ export default function CutlistImport({
       row,
       [
         "Section Name",
+        "section_name",
         "Section",
-        "Cabinet Name",
-        "Cabinet",
       ],
       ""
     );
@@ -291,10 +369,44 @@ export default function CutlistImport({
       row,
       [
         "Room Name",
+        "room_name",
         "Room",
       ],
       ""
     );
+  }
+
+  function getPanelName(row, index) {
+    return (
+      getSectionName(row) ||
+      getValue(
+        row,
+        [
+          "Panel Name",
+          "Panel",
+          "Part Name",
+          "Part",
+          "Part No",
+          "Part Number",
+          "Item Name",
+          "Item",
+          "Description",
+          "Name",
+        ],
+        ""
+      ) ||
+      `Panel ${index + 1}`
+    );
+  }
+
+  function getProductionFieldMapping(row, index) {
+    return {
+      fbName: getFbName(row, index),
+      assemblyLabel: getCabinetNumber(row),
+      cabinetName: getCabinetName(row),
+      sectionName: getSectionName(row),
+      roomName: getRoomName(row),
+    };
   }
 
   function getThickness(row) {
@@ -594,7 +706,65 @@ export default function CutlistImport({
       );
 
       /* -----------------------------------------------
-         INSERT PANELS USING App.jsx
+         EXACT CUTLIST FIELD MAPPING
+
+         FB Name        -> individual FB / panel number
+         Assembly Label -> cabinet number (#1, #2, #3...)
+         Cabinet Name   -> cabinet name
+         Section Name   -> section / panel name
+         Room Name      -> room
+
+         The existing App.jsx import workflow is preserved.
+         Only the meanings of these fields are normalized.
+      ------------------------------------------------ */
+
+      rows.forEach(
+        (row, index) => {
+          const mapping =
+            getProductionFieldMapping(
+              row,
+              index
+            );
+
+          /*
+           * App.jsx reads these exact Excel-style aliases
+           * first, so normalize them before the existing
+           * importCutlist() function is called.
+           */
+          row["FB Name"] =
+            mapping.fbName;
+
+          row["fb_name"] =
+            mapping.fbName;
+
+          row["Assembly Label"] =
+            mapping.assemblyLabel;
+
+          row["assembly_label"] =
+            mapping.assemblyLabel;
+
+          row["Cabinet Name"] =
+            mapping.cabinetName;
+
+          row["cabinet_name"] =
+            mapping.cabinetName;
+
+          row["Section Name"] =
+            mapping.sectionName;
+
+          row["section_name"] =
+            mapping.sectionName;
+
+          row["Room Name"] =
+            mapping.roomName;
+
+          row["room_name"] =
+            mapping.roomName;
+        }
+      );
+
+      /* -----------------------------------------------
+         INSERT PANELS USING EXISTING App.jsx WORKFLOW
       ------------------------------------------------ */
 
       await importCutlist(
@@ -730,6 +900,12 @@ export default function CutlistImport({
     const row =
       physicalRow.sourceRow;
 
+    const mapping =
+      getProductionFieldMapping(
+        row,
+        physicalRow.sourceRowIndex
+      );
+
     return {
       labelNumber:
         index + 1,
@@ -739,21 +915,27 @@ export default function CutlistImport({
           index + 1
         ),
 
+      fbName:
+        mapping.fbName,
+
+      cabinetNumber:
+        mapping.assemblyLabel,
+
+      cabinetName:
+        mapping.cabinetName,
+
       panelName:
+        mapping.sectionName ||
         getPanelName(
           row,
           physicalRow.sourceRowIndex
         ),
 
       sectionName:
-        getSectionName(
-          row
-        ),
+        mapping.sectionName,
 
       roomName:
-        getRoomName(
-          row
-        ),
+        mapping.roomName,
 
       thickness:
         getThickness(
@@ -913,6 +1095,26 @@ export default function CutlistImport({
         compress: true,
       });
 
+      /*
+       * NOVAJET MPL24L / A4
+       *
+       * Physical sheet:
+       * - A4: 210 × 297 mm
+       * - 3 columns × 8 rows
+       * - Each label: 64 × 34 mm
+       *
+       * Horizontal:
+       * 6 + 64 + 3 + 64 + 3 + 64 + 6 = 210 mm
+       *
+       * Vertical:
+       * 12 + (8 × 34) = 284 mm
+       * Remaining bottom area = 13 mm
+       *
+       * IMPORTANT:
+       * Every label is placed using fixed coordinates.
+       * Nothing is allowed to flow into another label.
+       */
+
       const PAGE_W = 210;
       const PAGE_H = 297;
 
@@ -921,207 +1123,474 @@ export default function CutlistImport({
 
       const LEFT = 6;
       const TOP = 12;
+
       const COL_GAP = 3;
       const ROW_GAP = 0;
 
       const BORDER_INSET = 0.45;
 
-      manualLabels.forEach((label, index) => {
-        /*
-         * 24 labels per physical A4 sheet.
-         * IMPORTANT: reset row/column for every new page.
-         */
-        const indexOnPage = index % 24;
-        const col = indexOnPage % 3;
-        const row = Math.floor(indexOnPage / 3);
+      /*
+       * Helper for readable one-line fields.
+       * Long names are shortened only when they physically
+       * cannot fit inside the label.
+       */
+      function fitText(
+        value,
+        maxWidth,
+        fontSize,
+        fontName = "helvetica",
+        fontStyle = "normal"
+      ) {
+        const clean = cleanText(value);
 
-        if (index > 0 && indexOnPage === 0) {
-          pdf.addPage(
-            [PAGE_W, PAGE_H],
-            "portrait"
-          );
+        if (!clean) {
+          return "-";
         }
 
-        const x =
-          LEFT +
-          col * (LABEL_W + COL_GAP);
-
-        const y =
-          TOP +
-          row * (LABEL_H + ROW_GAP);
-
-        /*
-         * Border is deliberately drawn INSIDE the
-         * 64 × 34mm peel area.
-         */
-        pdf.setLineWidth(0.25);
-        pdf.roundedRect(
-          x + BORDER_INSET,
-          y + BORDER_INSET,
-          LABEL_W -
-            BORDER_INSET * 2,
-          LABEL_H -
-            BORDER_INSET * 2,
-          1.2,
-          1.2,
-          "S"
-        );
-
-        /*
-         * Small QR.
-         *
-         * 14mm keeps it safely inside the label and
-         * leaves enough room for readable panel data.
-         */
-        const QR = 14;
-
-        pdf.addImage(
-          label.qrImage,
-          "PNG",
-          x + 2.2,
-          y + 9.2,
-          QR,
-          QR,
-          undefined,
-          "FAST"
-        );
-
-        const textX = x + 18.5;
-
-        /* BRAND */
-        pdf.setTextColor(17, 24, 39);
         pdf.setFont(
-          "helvetica",
-          "bold"
+          fontName,
+          fontStyle
         );
-        pdf.setFontSize(6.2);
-        pdf.text(
-          "TRACKERZ",
-          textX,
-          y + 5.2
+        pdf.setFontSize(
+          fontSize
         );
 
-        /* LABEL NUMBER */
-        pdf.setFontSize(10);
-        pdf.text(
-          String(
-            label.labelNumber
-          ).padStart(4, "0"),
-          textX,
-          y + 9.6
-        );
+        if (
+          pdf.getTextWidth(clean) <=
+          maxWidth
+        ) {
+          return clean;
+        }
 
-        /* PANEL NAME */
-        pdf.setFont(
-          "helvetica",
-          "bold"
-        );
-        pdf.setFontSize(5.6);
+        let result = clean;
 
-        const panelName =
-          cleanText(
-            label.panelName
-          ) || "Panel";
+        while (
+          result.length > 3 &&
+          pdf.getTextWidth(
+            `${result}…`
+          ) > maxWidth
+        ) {
+          result =
+            result.slice(
+              0,
+              -1
+            );
+        }
 
-        pdf.text(
-          pdf.splitTextToSize(
+        return `${result}…`;
+      }
+
+      manualLabels.forEach(
+        (label, index) => {
+          /*
+           * 24 labels per A4 page.
+           */
+          const indexOnPage =
+            index % 24;
+
+          const col =
+            indexOnPage % 3;
+
+          const row =
+            Math.floor(
+              indexOnPage / 3
+            );
+
+          if (
+            index > 0 &&
+            indexOnPage === 0
+          ) {
+            pdf.addPage(
+              [PAGE_W, PAGE_H],
+              "portrait"
+            );
+          }
+
+          const x =
+            LEFT +
+            col *
+              (LABEL_W +
+                COL_GAP);
+
+          const y =
+            TOP +
+            row *
+              (LABEL_H +
+                ROW_GAP);
+
+          /*
+           * Border stays completely INSIDE the
+           * physical 64 × 34 mm label.
+           */
+          pdf.setDrawColor(
+            100,
+            100,
+            100
+          );
+
+          pdf.setLineWidth(
+            0.22
+          );
+
+          pdf.roundedRect(
+            x + BORDER_INSET,
+            y + BORDER_INSET,
+            LABEL_W -
+              BORDER_INSET * 2,
+            LABEL_H -
+              BORDER_INSET * 2,
+            1.2,
+            1.2,
+            "S"
+          );
+
+          /*
+           * -------------------------------------------------
+           * QR CODE
+           * -------------------------------------------------
+           *
+           * Reduced from 14 mm to 10.5 mm.
+           * This deliberately gives more physical space to
+           * Panel / Cabinet / Room / Size information.
+           */
+          const QR = 10.5;
+
+          const qrX =
+            x + 2.5;
+
+          const qrY =
+            y + 11.2;
+
+          pdf.addImage(
+            label.qrImage,
+            "PNG",
+            qrX,
+            qrY,
+            QR,
+            QR,
+            undefined,
+            "FAST"
+          );
+
+          /*
+           * -------------------------------------------------
+           * TEXT AREA
+           * -------------------------------------------------
+           *
+           * Everything important is on the right side.
+           * The available width is approximately 46 mm.
+           */
+          const textX =
+            x + 15.0;
+
+          const textWidth =
+            46.0;
+
+          pdf.setTextColor(
+            15,
+            23,
+            42
+          );
+
+          /*
+           * BRAND + LABEL NUMBER
+           */
+          pdf.setFont(
+            "helvetica",
+            "bold"
+          );
+
+          pdf.setFontSize(
+            5.4
+          );
+
+          pdf.text(
+            "TRACKERZ",
+            textX,
+            y + 5.0
+          );
+
+          pdf.setFontSize(
+            8.0
+          );
+
+          pdf.text(
+            String(
+              label.labelNumber
+            ).padStart(4, "0"),
+            x + LABEL_W - 2.5,
+            y + 5.0,
+            {
+              align: "right",
+            }
+          );
+
+          /*
+           * PANEL NAME
+           *
+           * Larger and visually prominent.
+           */
+          const panelName =
+            fitText(
+              label.panelName,
+              textWidth,
+              6.6,
+              "helvetica",
+              "bold"
+            );
+
+          pdf.setFont(
+            "helvetica",
+            "bold"
+          );
+
+          pdf.setFontSize(
+            6.6
+          );
+
+          pdf.text(
             `PANEL: ${panelName}`,
-            42
-          ).slice(0, 1),
-          textX,
-          y + 13.5
-        );
-
-        /* SECTION */
-        const section =
-          cleanText(
-            label.sectionName
+            textX,
+            y + 9.2
           );
 
-        pdf.setFont(
-          "helvetica",
-          "normal"
-        );
-        pdf.setFontSize(5.2);
+          /*
+           * FB NUMBER
+           */
+          const fbName =
+            fitText(
+              label.fbName,
+              textWidth,
+              6.0,
+              "helvetica",
+              "bold"
+            );
 
-        pdf.text(
-          pdf.splitTextToSize(
-            `SECTION: ${section || "-"}`,
-            42
-          ).slice(0, 1),
-          textX,
-          y + 17.1
-        );
-
-        /* ROOM */
-        const room =
-          cleanText(
-            label.roomName
+          pdf.setFontSize(
+            6.0
           );
 
-        pdf.text(
-          pdf.splitTextToSize(
-            `ROOM: ${room || "-"}`,
-            42
-          ).slice(0, 1),
-          textX,
-          y + 20.7
-        );
+          pdf.text(
+            `FB NO: ${fbName}`,
+            textX,
+            y + 13.2
+          );
 
-        /* SIZE + THICKNESS */
-        pdf.setFont(
-          "helvetica",
-          "bold"
-        );
-        pdf.setFontSize(5.4);
+          /*
+           * CABINET NUMBER + NAME
+           */
+          const cabinetNumber =
+            fitText(
+              label.cabinetNumber,
+              12.0,
+              5.8,
+              "helvetica",
+              "bold"
+            );
 
-        const sizeText =
-          `SIZE: L ${cleanText(label.length) || "-"} × ` +
-          `W ${cleanText(label.width) || "-"} × ` +
-          `T ${cleanText(label.thickness) || "-"}`;
+          const cabinetName =
+            fitText(
+              label.cabinetName,
+              textWidth - 13.0,
+              5.8,
+              "helvetica",
+              "bold"
+            );
 
-        pdf.text(
-          pdf.splitTextToSize(
+          pdf.setFontSize(
+            5.8
+          );
+
+          pdf.text(
+            `CABINET: ${cabinetNumber}  ${cabinetName}`,
+            textX,
+            y + 17.0
+          );
+
+          /*
+           * SECTION NAME
+           */
+          const sectionName =
+            fitText(
+              label.sectionName,
+              textWidth,
+              5.8,
+              "helvetica",
+              "bold"
+            );
+
+          pdf.setFontSize(
+            5.8
+          );
+
+          pdf.text(
+            `SECTION: ${sectionName}`,
+            textX,
+            y + 20.6
+          );
+
+          /*
+           * ROOM NAME
+           */
+          const roomName =
+            fitText(
+              label.roomName,
+              textWidth,
+              6.0,
+              "helvetica",
+              "bold"
+            );
+
+          pdf.text(
+            `ROOM: ${roomName}`,
+            textX,
+            y + 24.0
+          );
+
+          /*
+           * -------------------------------------------------
+           * DIMENSIONS
+           * -------------------------------------------------
+           *
+           * This is intentionally one of the largest fields.
+           * Example:
+           *
+           * SIZE: 600 × 462 × 18 mm
+           *
+           * L = Length
+           * W = Width
+           * T = Thickness / Depth
+           */
+          const length =
+            cleanText(
+              label.length
+            ) || "-";
+
+          const width =
+            cleanText(
+              label.width
+            ) || "-";
+
+          const thickness =
+            cleanText(
+              label.thickness
+            ) || "-";
+
+          const sizeText =
+            `SIZE: ${length} × ${width} × ${thickness} mm`;
+
+          pdf.setFont(
+            "helvetica",
+            "bold"
+          );
+
+          pdf.setFontSize(
+            6.4
+          );
+
+          /*
+           * If the dimensions are unusually long,
+           * reduce only the dimension text slightly.
+           */
+          let sizeFontSize = 6.4;
+
+          while (
+            sizeFontSize > 5.3 &&
+            pdf.getTextWidth(
+              sizeText
+            ) > textWidth
+          ) {
+            sizeFontSize -=
+              0.2;
+
+            pdf.setFontSize(
+              sizeFontSize
+            );
+          }
+
+          pdf.text(
             sizeText,
-            42
-          ).slice(0, 1),
-          textX,
-          y + 24.3
-        );
-
-        /* MATERIAL */
-        const material =
-          cleanText(
-            label.material
+            textX,
+            y + 27.5
           );
 
-        pdf.setFont(
-          "helvetica",
-          "normal"
-        );
-        pdf.setFontSize(5.1);
+          /*
+           * MATERIAL
+           */
+          const material =
+            fitText(
+              label.material,
+              textWidth,
+              5.7,
+              "helvetica",
+              "bold"
+            );
 
-        pdf.text(
-          pdf.splitTextToSize(
-            `MAT: ${material || "-"}`,
-            42
-          ).slice(0, 1),
-          textX,
-          y + 27.8
-        );
+          pdf.setFont(
+            "helvetica",
+            "bold"
+          );
 
-        /* QR ID - compact and readable */
-        pdf.setFont(
-          "courier",
-          "bold"
-        );
-        pdf.setFontSize(4.5);
-        pdf.text(
-          label.qrData,
-          x + 2.2,
-          y + 31.3
-        );
-      });
+          pdf.setFontSize(
+            5.7
+          );
+
+          pdf.text(
+            `MAT: ${material}`,
+            textX,
+            y + 30.2
+          );
+
+          /*
+           * QR ID
+           *
+           * Small enough not to compete with the
+           * important panel information.
+           */
+          pdf.setFont(
+            "courier",
+            "bold"
+          );
+
+          pdf.setFontSize(
+            4.2
+          );
+
+          pdf.text(
+            label.qrData,
+            x + 2.5,
+            y + 33.0
+          );
+
+          /*
+           * Small "physical panel" indicator.
+           * Useful when Quantity > 1 without taking space.
+           */
+          if (
+            Number(
+              label.originalQuantity
+            ) > 1
+          ) {
+            pdf.setFont(
+              "helvetica",
+              "normal"
+            );
+
+            pdf.setFontSize(
+              3.8
+            );
+
+            pdf.text(
+              `#${label.quantityInstance}/${label.originalQuantity}`,
+              x + LABEL_W - 2.5,
+              y + 31.2,
+              {
+                align: "right",
+              }
+            );
+          }
+        }
+      );
 
       const safeSite =
         qrSiteName || "SITE";
@@ -2516,7 +2985,21 @@ export default function CutlistImport({
                         color: "#111827",
                       }}
                     >
-                      PANEL: {label.panelName || "Panel"}
+                      FB NO: {label.fbName || "-"}  •  {label.panelName || "Panel"}
+                    </div>
+
+                    <div
+                      style={{
+                        fontSize: "5.2px",
+                        fontWeight: 700,
+                        marginTop: "0.35mm",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        color: "#111827",
+                      }}
+                    >
+                      CABINET: {label.cabinetNumber || "-"}  •  {label.cabinetName || "-"}
                     </div>
 
                     <div
