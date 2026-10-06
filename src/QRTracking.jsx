@@ -205,16 +205,52 @@ function QRTracking() {
 
   const getPanelNameForPrint = (panel) =>
     panel?.fb_name ||
+    panel?.fbName ||
+    panel?.fb_name_print ||
+    panel?.fbNamePrint ||
     panel?.panel_name ||
     panel?.panelName ||
+    panel?.part_name ||
+    panel?.partName ||
+    panel?.component_name ||
+    panel?.componentName ||
     panel?.name ||
-    getPanelLabel(panel) ||
+    panel?.description ||
+    panel?.panel ||
     "Panel";
+
+  const getPanelRoomForPrint = (panel) =>
+    panel?.room_name ||
+    panel?.roomName ||
+    panel?.room ||
+    panel?.room_name_print ||
+    panel?.roomNamePrint ||
+    panel?.room ||
+    panel?.space_name ||
+    panel?.spaceName ||
+    panel?.space ||
+    panel?.area_name ||
+    panel?.areaName ||
+    "-";
+
+  const getPanelCabinetForPrint = (panel) =>
+    panel?.cabinet_name ||
+    panel?.cabinetName ||
+    panel?.cabinet ||
+    panel?.cabinet_name_print ||
+    panel?.cabinetNamePrint ||
+    panel?.unit_name ||
+    panel?.unitName ||
+    panel?.carcass_name ||
+    panel?.carcassName ||
+    "-";
 
   const getPanelSectionForPrint = (panel) =>
     panel?.section_name ||
     panel?.sectionName ||
     panel?.section ||
+    panel?.section_name_print ||
+    panel?.sectionNamePrint ||
     "-";
 
   const getPanelLabelNumberForPrint = (panel) =>
@@ -223,6 +259,8 @@ function QRTracking() {
     panel?.label_number ||
     panel?.labelNumber ||
     panel?.barcode ||
+    panel?.panel_number ||
+    panel?.panelNumber ||
     "-";
 
   /* =========================================================
@@ -1354,7 +1392,22 @@ function QRTracking() {
                     )}
                   </div>
 
-                  <div class="panel-section">
+                  <div class="panel-reference">
+                    <span class="reference-label">ROOM:</span>
+                    ${escapePrintHtml(
+                      getPanelRoomForPrint(
+                        panel
+                      )
+                    )}
+                    <span class="reference-separator">•</span>
+                    <span class="reference-label">CABINET:</span>
+                    ${escapePrintHtml(
+                      getPanelCabinetForPrint(
+                        panel
+                      )
+                    )}
+                    <span class="reference-separator">•</span>
+                    <span class="reference-label">SECTION:</span>
                     ${escapePrintHtml(
                       getPanelSectionForPrint(
                         panel
@@ -1494,7 +1547,7 @@ function QRTracking() {
             <span>#</span>
 
             <span>
-              Panel / Section
+              Panel / Room / Cabinet
             </span>
 
             <span>
@@ -1779,7 +1832,7 @@ function QRTracking() {
                 5mm
                 1fr
                 12mm
-                23mm;
+                27mm;
 
               column-gap: 1mm;
 
@@ -1792,7 +1845,7 @@ function QRTracking() {
                 5mm
                 1fr
                 11mm
-                22mm
+                26mm
                 22mm;
             }
 
@@ -1812,7 +1865,7 @@ function QRTracking() {
               border-bottom:
                 0.2mm solid #d1d5db;
 
-              font-size: 4.4px;
+              font-size: 4.8px;
 
               line-height: 1;
 
@@ -1822,7 +1875,7 @@ function QRTracking() {
             }
 
             .panel-row {
-              min-height: 6.2mm;
+              min-height: 6.6mm;
 
               padding:
                 0.9mm
@@ -1843,40 +1896,56 @@ function QRTracking() {
             }
 
             .panel-name {
-              font-size: 5.5px;
+              font-size: 7.2px;
               line-height: 1.05;
               font-weight: 900;
               white-space: nowrap;
               overflow: hidden;
               text-overflow: ellipsis;
+              color: #111827;
             }
 
-            .panel-section {
-              margin-top: 0.7mm;
-              font-size: 4px;
-              line-height: 1;
-              color: #6b7280;
+            .panel-reference {
+              margin-top: 0.75mm;
+              font-size: 5.4px;
+              line-height: 1.05;
+              font-weight: 800;
+              color: #1f2937;
               white-space: nowrap;
               overflow: hidden;
               text-overflow: ellipsis;
+            }
+
+            .reference-label {
+              font-weight: 900;
+              color: #111827;
+            }
+
+            .reference-separator {
+              padding: 0 0.7mm;
+              color: #6b7280;
+              font-weight: 900;
             }
 
             .panel-label {
-              font-size: 4.3px;
+              font-size: 5.8px;
               line-height: 1.05;
-              font-weight: 800;
+              font-weight: 900;
               white-space: nowrap;
               overflow: hidden;
               text-overflow: ellipsis;
+              color: #111827;
             }
 
             .panel-size {
               display: flex;
-              gap: 1mm;
+              gap: 1.4mm;
               white-space: nowrap;
-              font-size: 4.3px;
+              font-size: 7.4px;
               line-height: 1;
               font-weight: 900;
+              letter-spacing: 0.08px;
+              color: #111827;
             }
 
             .panel-remarks {
@@ -3102,95 +3171,12 @@ function QRTracking() {
               </div>
             </div>
 
-            <div
-              style={{
-                display:
-                  "flex",
-
-                gap: 5,
-              }}
-            >
-              <button
-                disabled={
-                  actionLoading
-                }
-                onClick={
-                  handleClosePacket
-                }
-                style={{
-                  border:
-                    "1px solid #16a34a",
-
-                  background:
-                    "#f0fdf4",
-
-                  color:
-                    "#15803d",
-
-                  borderRadius:
-                    6,
-
-                  padding:
-                    "6px 9px",
-
-                  fontWeight:
-                    800,
-
-                  cursor:
-                    actionLoading
-                      ? "not-allowed"
-                      : "pointer",
-
-                  fontSize:
-                    10,
-                }}
-              >
-                ✓ CLOSE &
-                PRINT
-              </button>
-
-              <button
-                disabled={
-                  actionLoading
-                }
-                onClick={
-                  handleDeleteOpenPacket
-                }
-                style={{
-                  width: 30,
-
-                  height: 30,
-
-                  border:
-                    "1px solid #fecaca",
-
-                  background:
-                    "#fff",
-
-                  color:
-                    "#dc2626",
-
-                  borderRadius:
-                    6,
-
-                  fontWeight:
-                    800,
-
-                  cursor:
-                    actionLoading
-                      ? "not-allowed"
-                      : "pointer",
-                }}
-              >
-                ×
-              </button>
-            </div>
           </div>
 
           <div
             style={{
               maxHeight:
-                74,
+                180,
 
               overflowY:
                 "auto",
@@ -3232,7 +3218,13 @@ function QRTracking() {
                       5,
 
                     padding:
-                      "4px 6px",
+                      "6px 8px",
+
+                    minHeight:
+                      30,
+
+                    boxSizing:
+                      "border-box",
                   }}
                 >
                   <strong

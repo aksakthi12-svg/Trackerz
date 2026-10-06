@@ -11,6 +11,7 @@ import CutlistImport from "./CutlistImport";
 import QRTracking from "./QRTracking";
 import Production from "./Production";
 import Dispatch from "./Dispatch";
+import OwnerDashboard from "./OwnerDashboard";
 
 import "./App.css";
 
@@ -70,6 +71,16 @@ function App() {
 
   const [session, setSession] = useState(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
+
+  /* ======================================================
+     OWNER ACCESS
+
+     Added only for the separate Trackerz Owner Dashboard.
+     Existing factory state and workflow remain unchanged.
+  ====================================================== */
+
+  const [isOwner, setIsOwner] = useState(false);
+  const [checkingOwner, setCheckingOwner] = useState(true);
 
   /* ======================================================
      COMPANY
@@ -136,6 +147,11 @@ function App() {
   const [showImport, setShowImport] = useState(false);
   const [importFile, setImportFile] = useState(null);
   const [importRows, setImportRows] = useState([]);
+  /*
+   * Normalized cutlist rows used ONLY for the Supabase import.
+   * The original Excel rows remain untouched for preview/download.
+   */
+  const [normalizedImportRows, setNormalizedImportRows] = useState([]);
   const [importing, setImporting] = useState(false);
 
   /* ======================================================
@@ -194,6 +210,85 @@ function App() {
       subscription.unsubscribe();
     };
   }, []);
+
+  /* ======================================================
+     CHECK TRACKERZ OWNER ACCESS
+
+     This reads only the current user's row from
+     owner_users. The RLS policy created in Supabase
+     allows a logged-in user to see only their own record.
+
+     No existing factory authentication logic is changed.
+  ====================================================== */
+
+  useEffect(() => {
+    if (!session?.user?.id) {
+      setIsOwner(false);
+      setCheckingOwner(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function checkOwnerAccess() {
+      setCheckingOwner(true);
+
+      try {
+        const {
+          data,
+          error,
+        } = await supabase
+          .from("owner_users")
+          .select(
+            "id, display_name, email, status"
+          )
+          .eq(
+            "user_id",
+            session.user.id
+          )
+          .eq(
+            "status",
+            "active"
+          )
+          .maybeSingle();
+
+        if (cancelled) {
+          return;
+        }
+
+        if (error) {
+          console.error(
+            "Owner access check failed:",
+            error
+          );
+
+          setIsOwner(false);
+          return;
+        }
+
+        setIsOwner(!!data);
+      } catch (err) {
+        if (!cancelled) {
+          console.error(
+            "Owner access check failed:",
+            err
+          );
+
+          setIsOwner(false);
+        }
+      } finally {
+        if (!cancelled) {
+          setCheckingOwner(false);
+        }
+      }
+    }
+
+    checkOwnerAccess();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [session]);
 
   /* ======================================================
      LOAD DATA AFTER LOGIN
@@ -456,6 +551,8 @@ function App() {
       }
 
       setSession(null);
+      setIsOwner(false);
+      setCheckingOwner(true);
       setSites([]);
       setPanels([]);
       setPackets([]);
@@ -1161,8 +1258,7 @@ function App() {
 
       if (
         !workbook.SheetNames ||
-        workbook.SheetNames.length ===
-          0
+        workbook.SheetNames.length === 0
       ) {
         throw new Error(
           "No worksheet found."
@@ -1179,6 +1275,7 @@ function App() {
           firstSheet,
           {
             defval: "",
+            raw: false,
           }
         );
 
@@ -1186,14 +1283,37 @@ function App() {
         setError(
           "The Excel file does not contain any data."
         );
-
         return;
+      }
+
+      /*
+       * Validate the actual workbook immediately.
+       * This uses the same normalization that the
+       * Supabase import will use later.
+       */
+      const normalizedRows =
+        normalizeCutlistRows(rows);
+
+      const hasRecognizedCutlistData =
+        normalizedRows.some(
+          (row) =>
+            row.fb_name ||
+            row.cabinet_name ||
+            row.section_name ||
+            row.material ||
+            row.customer
+        );
+
+      if (!hasRecognizedCutlistData) {
+        throw new Error(
+          "The Excel file was read, but FB Name / Cabinet Name / Section Name / Material / Customer columns could not be detected."
+        );
       }
 
       setImportRows(rows);
 
       setMessage(
-        `${rows.length} rows found in the cutlist.`
+        `${rows.length} rows found. FB/Cabinet/Section/Room/Assembly mapping detected.`
       );
     } catch (err) {
       console.error(
@@ -1202,38 +1322,48 @@ function App() {
       );
 
       setError(
-        "Unable to read this Excel file."
+        err.message ||
+          "Unable to read this Excel file."
       );
 
       setImportRows([]);
+      setImportFile(null);
     }
   }
+
 
   /* ======================================================
      EXCEL HELPERS
   ====================================================== */
 
+  function normalizeColumnName(value) {
+    return String(value ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "");
+  }
+
   function findColumn(
     row,
     possibleNames
   ) {
-    const keys =
-      Object.keys(row);
+    const keys = Object.keys(row || {});
 
-    for (
-      const name of possibleNames
-    ) {
-      const found = keys.find(
-        (key) =>
-          String(key)
-            .trim()
-            .toLowerCase() ===
-          String(name)
-            .trim()
-            .toLowerCase()
-      );
+    const normalizedKeys = new Map(
+      keys.map((key) => [
+        normalizeColumnName(key),
+        key,
+      ])
+    );
 
-      if (found) {
+    for (const name of possibleNames) {
+      const normalizedName =
+        normalizeColumnName(name);
+
+      const found =
+        normalizedKeys.get(normalizedName);
+
+      if (found !== undefined) {
         return found;
       }
     }
@@ -1285,6 +1415,160 @@ function App() {
   }
 
   /* ======================================================
+     CUTLIST NORMALIZATION
+
+     The actual Gowtham Beamsaw workbook uses these headers:
+     Material, FB Name, Thickness, FB Length, FB Width,
+     Quantity, Cabinet Name, Section Name, Customer,
+     Remark, Room Name, Assembly Label.
+
+     We normalize the workbook into fixed internal fields
+     before creating Supabase rows.  This prevents the
+     database mapping from depending on Excel header spelling.
+  ====================================================== */
+
+  function normalizeCutlistRows(rows) {
+    return (Array.isArray(rows) ? rows : []).map(
+      (row, index) => {
+        const fbName = String(
+          valueFromRow(row, [
+            "FB Name",
+            "fb_name",
+            "FB",
+            "FBName",
+          ]) ?? ""
+        ).trim();
+
+        const assemblyLabel = String(
+          valueFromRow(row, [
+            "Assembly Label",
+            "assembly_label",
+            "Assembly",
+            "AssemblyName",
+            "Assembly Name",
+          ]) ?? ""
+        ).trim();
+
+        const cabinetName = String(
+          valueFromRow(row, [
+            "Cabinet Name",
+            "cabinet_name",
+            "Cabinet",
+            "CabinetName",
+          ]) ?? ""
+        ).trim();
+
+        const sectionName = String(
+          valueFromRow(row, [
+            "Section Name",
+            "section_name",
+            "Section",
+            "SectionName",
+          ]) ?? ""
+        ).trim();
+
+        const roomName = String(
+          valueFromRow(row, [
+            "Room Name",
+            "room_name",
+            "Room",
+            "RoomName",
+          ]) ?? ""
+        ).trim();
+
+        const material = String(
+          valueFromRow(row, [
+            "Material",
+            "material",
+            "Material Name",
+            "Board Material",
+          ]) ?? ""
+        ).trim();
+
+        const customer = String(
+          valueFromRow(row, [
+            "Customer",
+            "customer",
+          ]) ?? ""
+        ).trim();
+
+        const remark = String(
+          valueFromRow(row, [
+            "Remark",
+            "remark",
+            "Remarks",
+            "Note",
+            "Notes",
+          ]) ?? ""
+        ).trim();
+
+        const panelName =
+          fbName ||
+          String(
+            valueFromRow(row, [
+              "Panel",
+              "Panel Name",
+              "panel",
+              "panel_name",
+              "Part",
+              "Part No",
+              "Name",
+              "Description",
+            ]) ?? ""
+          ).trim() ||
+          `Panel-${index + 1}`;
+
+        return {
+          fb_name: fbName,
+          panel_name: panelName,
+          assembly_label: assemblyLabel,
+          cabinet_name: cabinetName,
+          section_name: sectionName,
+          room_name: roomName,
+          material,
+          customer,
+          remark,
+          length: numberFromRow(row, [
+            "FB Length",
+            "Length",
+            "length",
+            "Len",
+            "L",
+          ]),
+          width: numberFromRow(row, [
+            "FB Width",
+            "Width",
+            "width",
+            "Wid",
+            "W",
+          ]),
+          thickness: numberFromRow(row, [
+            "Thickness",
+            "thickness",
+            "Thk",
+            "T",
+          ]),
+          quantity: (() => {
+            const value = numberFromRow(row, [
+              "Quantity",
+              "Qty",
+              "quantity",
+              "count",
+            ]);
+
+            return value === null
+              ? 1
+              : Math.max(
+                  1,
+                  Math.floor(Number(value))
+                );
+          })(),
+        };
+      }
+    );
+  }
+
+  /* ======================================================
      IMPORT CUTLIST
   ====================================================== */
 
@@ -1332,129 +1616,100 @@ function App() {
        *
        * No database structure is changed.
        */
+      /*
+       * Re-read the selected Excel file at the moment of import.
+       *
+       * This deliberately does NOT depend on React state having
+       * finished updating after the upload.  The exact workbook
+       * selected by the user is parsed again and normalized here.
+       */
+      let sourceRows = importRows;
+
+      if (importFile) {
+        const buffer =
+          await importFile.arrayBuffer();
+
+        const workbook =
+          XLSX.read(buffer, {
+            type: "array",
+          });
+
+        if (
+          !workbook.SheetNames ||
+          workbook.SheetNames.length === 0
+        ) {
+          throw new Error(
+            "No worksheet found in the selected Excel file."
+          );
+        }
+
+        const firstSheet =
+          workbook.Sheets[
+            workbook.SheetNames[0]
+          ];
+
+        sourceRows =
+          XLSX.utils.sheet_to_json(
+            firstSheet,
+            {
+              defval: "",
+              raw: false,
+            }
+          );
+      }
+
+      const normalizedRows =
+        normalizeCutlistRows(sourceRows);
+
+      if (!normalizedRows.length) {
+        throw new Error(
+          "No cutlist rows were found in the selected Excel file."
+        );
+      }
+
+      const hasRecognizedCutlistData =
+        normalizedRows.some(
+          (row) =>
+            row.fb_name ||
+            row.cabinet_name ||
+            row.section_name ||
+            row.material ||
+            row.customer
+        );
+
+      if (!hasRecognizedCutlistData) {
+        throw new Error(
+          "The selected Excel file does not contain recognizable FB Name / Cabinet Name / Section Name / Material / Customer data."
+        );
+      }
+
+      /*
+       * Fail early instead of inserting blank metadata.
+       * For the current Gowtham Beamsaw file, Room Name and
+       * Assembly Label are genuinely blank in Excel, so those
+       * two fields are allowed to remain empty.
+       */
       const rowsToInsert = [];
 
       let physicalIndex = 0;
 
-      importRows.forEach(
+      normalizedRows.forEach(
         (row, index) => {
-          const assemblyLabel =
-            valueFromRow(row, [
-              "Assembly Label",
-              "assembly_label",
-              "Assembly",
-            ]);
-
-          const sectionName =
-            valueFromRow(row, [
-              "Section Name",
-              "section_name",
-              "Section",
-            ]);
-
-          const cabinetName =
-            valueFromRow(row, [
-              "Cabinet Name",
-              "cabinet_name",
-              "Cabinet",
-            ]);
-
-          const roomName =
-            valueFromRow(row, [
-              "Room Name",
-              "room_name",
-              "Room",
-            ]);
-
-          const material =
-            valueFromRow(row, [
-              "Material",
-              "material",
-            ]);
-
-          const fbName =
-            valueFromRow(row, [
-              "FB Name",
-              "fb_name",
-            ]);
-
-          const customer =
-            valueFromRow(row, [
-              "Customer",
-              "customer",
-            ]);
-
-          const remark =
-            valueFromRow(row, [
-              "Remark",
-              "remark",
-            ]);
-
-          const panelName =
-            assemblyLabel ||
-            fbName ||
-            sectionName ||
-            valueFromRow(row, [
-              "Panel",
-              "Panel Name",
-              "panel",
-              "panel_name",
-              "Part",
-              "Part No",
-              "Name",
-              "Description",
-            ]) ||
-            `Panel-${index + 1}`;
-
-          const length =
-            numberFromRow(row, [
-              "FB Length",
-              "Length",
-              "length",
-              "Len",
-              "L",
-            ]);
-
-          const width =
-            numberFromRow(row, [
-              "FB Width",
-              "Width",
-              "width",
-              "Wid",
-              "W",
-            ]);
-
-          const thickness =
-            numberFromRow(row, [
-              "Thickness",
-              "thickness",
-              "Thk",
-              "T",
-            ]);
-
-          const quantityValue =
-            numberFromRow(row, [
-              "Quantity",
-              "Qty",
-              "quantity",
-              "count",
-            ]);
-
           const quantity =
-            quantityValue === null
-              ? 1
-              : Math.max(
+            Number.isFinite(
+              Number(row.quantity)
+            )
+              ? Math.max(
                   1,
                   Math.floor(
-                    Number(
-                      quantityValue
-                    )
+                    Number(row.quantity)
                   )
-                );
+                )
+              : 1;
 
           const cleanSiteName =
             String(
-              activeSite.site_name
+              activeSite.site_name || ""
             )
               .trim()
               .replace(
@@ -1467,10 +1722,6 @@ function App() {
               )
               .toUpperCase();
 
-          /*
-           * Expand one Excel row into one database
-           * record for every physical panel.
-           */
           for (
             let copy = 1;
             copy <= quantity;
@@ -1483,6 +1734,12 @@ function App() {
                 physicalIndex
               ).padStart(4, "0")}`;
 
+            /*
+             * IMPORTANT:
+             * These are direct canonical values produced from
+             * the actual Excel workbook.  Each value is sent to
+             * its own Supabase column.
+             */
             rowsToInsert.push({
               site_id:
                 activeSite.id,
@@ -1490,22 +1747,44 @@ function App() {
               site_name:
                 activeSite.site_name,
 
+              fb_name:
+                row.fb_name || null,
+
               panel_name:
-                String(panelName),
+                String(
+                  row.panel_name || `Panel-${index + 1}`
+                ),
+
+              assembly_label:
+                row.assembly_label || null,
+
+              cabinet_name:
+                row.cabinet_name || null,
+
+              section_name:
+                row.section_name || null,
+
+              room_name:
+                row.room_name || null,
+
+              material:
+                row.material || null,
+
+              customer:
+                row.customer || null,
+
+              remark:
+                row.remark || null,
 
               length:
-                length,
+                row.length,
 
               width:
-                width,
+                row.width,
 
               thickness:
-                thickness,
+                row.thickness,
 
-              /*
-               * Each database row represents ONE
-               * physical panel.
-               */
               quantity:
                 1,
 
@@ -1522,12 +1801,39 @@ function App() {
         }
       );
 
+      /*
+       * Safety check specifically for the current workbook.
+       * If the Excel contains Cabinet/Section/FB values, we must
+       * never send an all-blank metadata payload.
+       */
+      const metadataRows =
+        rowsToInsert.filter(
+          (row) =>
+            row.fb_name ||
+            row.cabinet_name ||
+            row.section_name ||
+            row.material ||
+            row.customer ||
+            row.remark
+        );
+
+      if (
+        normalizedRows.length > 0 &&
+        metadataRows.length === 0
+      ) {
+        throw new Error(
+          "The Excel rows were read, but no FB/Cabinet/Section/Material/Customer metadata was mapped. Import stopped so blank panel metadata cannot be created."
+        );
+      }
+
+
       let insertedTotal = 0;
 
       const batchSize = 100;
 
       /*
-       * Existing panels columns only.
+       * Existing panels columns only, including the
+       * FB / Assembly / Cabinet / Section / Room mapping.
        *
        * No length_num.
        */
@@ -1555,6 +1861,134 @@ function App() {
 
         insertedTotal +=
           batch.length;
+      }
+
+      /*
+       * IMPORTANT REPAIR STEP
+       * ---------------------
+       * Some Trackerz/Supabase database versions can accept the
+       * panel row on INSERT while a trigger or older database rule
+       * clears the descriptive columns.  The SQL test confirmed
+       * that these columns can be written successfully with UPDATE.
+       *
+       * Therefore, after INSERT we explicitly write FB / Assembly /
+       * Cabinet / Section / Room / Material / Customer / Remark back
+       * to each physical panel using its unique QR Data.  This keeps
+       * the existing database structure untouched and makes the
+       * import reliable even if an INSERT trigger interferes.
+       */
+      const repairRows = rowsToInsert.filter(
+        (row) => row.qr_data
+      );
+
+      const repairChunkSize = 25;
+
+      for (
+        let i = 0;
+        i < repairRows.length;
+        i += repairChunkSize
+      ) {
+        const repairChunk =
+          repairRows.slice(
+            i,
+            i + repairChunkSize
+          );
+
+        await Promise.all(
+          repairChunk.map(async (row) => {
+            const { error: repairError } =
+              await supabase
+                .from("panels")
+                .update({
+                  fb_name: row.fb_name || null,
+                  panel_name: row.panel_name || null,
+                  assembly_label:
+                    row.assembly_label || null,
+                  cabinet_name:
+                    row.cabinet_name || null,
+                  section_name:
+                    row.section_name || null,
+                  room_name:
+                    row.room_name || null,
+                  material: row.material || null,
+                  customer: row.customer || null,
+                  remark: row.remark || null,
+                })
+                .eq("site_id", row.site_id)
+                .eq("qr_data", row.qr_data);
+
+            if (repairError) {
+              throw repairError;
+            }
+          })
+        );
+      }
+
+      /*
+       * Verify the fields that are critical for dispatch labels.
+       * This catches a wrong running build, an unexpected Excel
+       * header, or a database trigger that clears these columns.
+       */
+      const verificationQrData =
+        rowsToInsert
+          .slice(0, Math.min(10, rowsToInsert.length))
+          .map((row) => row.qr_data);
+
+      if (verificationQrData.length > 0) {
+        const {
+          data: verificationRows,
+          error: verificationError,
+        } = await supabase
+          .from("panels")
+          .select(
+            "qr_data,fb_name,assembly_label,cabinet_name,section_name,room_name,material,customer,remark"
+          )
+          .in("qr_data", verificationQrData);
+
+        if (verificationError) {
+          throw verificationError;
+        }
+
+        const byQr = new Map(
+          (verificationRows || []).map((row) => [
+            String(row.qr_data),
+            row,
+          ])
+        );
+
+        const expectedFirst = rowsToInsert[0];
+        const actualFirst =
+          byQr.get(String(expectedFirst.qr_data));
+
+        if (!actualFirst) {
+          throw new Error(
+            "The panel was inserted but could not be read back from Supabase using its QR Data."
+          );
+        }
+
+        const fieldsToVerify = [
+          "fb_name",
+          "assembly_label",
+          "cabinet_name",
+          "section_name",
+          "room_name",
+          "material",
+          "customer",
+          "remark",
+        ];
+
+        for (const field of fieldsToVerify) {
+          const expectedValue =
+            String(expectedFirst[field] ?? "").trim();
+          const actualValue =
+            String(actualFirst[field] ?? "").trim();
+
+          if (expectedValue !== actualValue) {
+            throw new Error(
+              `Supabase panel verification failed for ${field}. Expected "${expectedValue}" but received "${actualValue}". The import was stopped so incorrect dispatch data is not accepted.`
+            );
+          }
+        }
       }
 
       /*
@@ -1620,7 +2054,7 @@ function App() {
           insertedTotal === 1
             ? ""
             : "s"
-        } imported successfully.`
+        } imported successfully with FB / Assembly / Cabinet / Section / Room metadata.`
       );
 
       return {
@@ -4398,6 +4832,36 @@ function App() {
   }
 
   /* ======================================================
+     OWNER WORKSPACE
+
+     Verified Trackerz owners see only the new Owner
+     Dashboard. Factory users continue through the exact
+     existing application below.
+  ====================================================== */
+
+  if (checkingOwner) {
+    return (
+      <div className="app-loading">
+        <div className="loading-card">
+          <h2>
+            Trackerz
+          </h2>
+
+          <p>
+            Checking account access...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (isOwner) {
+    return (
+      <OwnerDashboard />
+    );
+  }
+
+  /* ======================================================
      MAIN APPLICATION
   ====================================================== */
 
@@ -4655,14 +5119,31 @@ function CutlistImportPage({
         newSite
       );
 
-      await importCutlist(
-        newSite,
-        {
-          keepPreview: true,
-        }
-      );
+      /*
+       * IMPORTANT:
+       * Pass the exact site row returned by Supabase directly
+       * into the existing App.jsx import function.  This avoids
+       * relying on React state having updated before the panel
+       * insert starts.
+       */
+      const importResult =
+        await importCutlist(
+          newSite,
+          {
+            keepPreview: true,
+          }
+        );
+
+      if (
+        !importResult?.success
+      ) {
+        throw new Error(
+          "The site was created, but the cutlist was not imported into Supabase."
+        );
+      }
 
       setReleasedSite(
+        importResult.site ||
         newSite
       );
 
