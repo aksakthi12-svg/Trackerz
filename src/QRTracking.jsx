@@ -35,6 +35,10 @@ function QRTracking() {
 
   const [manualQR, setManualQR] = useState("");
 
+  // Normal packing remains the default. Room-wise mode locks each packet
+  // to the room name on its first successfully scanned panel.
+  const [packingFormat, setPackingFormat] = useState("normal");
+
   const [openPacket, setOpenPacket] = useState(null);
 
   const [closedPackets, setClosedPackets] = useState([]);
@@ -232,6 +236,33 @@ function QRTracking() {
     panel?.area_name ||
     panel?.areaName ||
     "-";
+
+  const getPanelRoom = (panel) =>
+    String(
+      panel?.room_name ||
+        panel?.roomName ||
+        panel?.room ||
+        panel?.room_name_print ||
+        panel?.roomNamePrint ||
+        panel?.space_name ||
+        panel?.spaceName ||
+        panel?.space ||
+        panel?.area_name ||
+        panel?.areaName ||
+        ""
+    ).trim();
+
+  const getPacketRoom = (packet) => {
+    if (!packet) return "";
+    if (packet.room_name || packet.roomName) {
+      return String(packet.room_name || packet.roomName).trim();
+    }
+    const packetPanelIds = packet.panelIds || [];
+    const firstPanel = sitePanels.find((panel) =>
+      packetPanelIds.some((id) => String(id) === String(panel.id))
+    );
+    return getPanelRoom(firstPanel);
+  };
 
   const getPanelCabinetForPrint = (panel) =>
     panel?.cabinet_name ||
@@ -1010,10 +1041,8 @@ function QRTracking() {
 
       if (isPanelPacked(panel)) {
         showMessage(
-          `${getPanelLabel(
-            panel
-          )} is already packed.`,
-          "error"
+          `${getPanelLabel(panel)} is already packed.`,
+          "duplicate"
         );
 
         setSelectedPanelId(
@@ -1037,10 +1066,39 @@ function QRTracking() {
         let packet =
           openPacket;
 
+        // Room-wise packing: the first panel sets the packet room.
+        // Other rooms cannot be added to the same open packet.
+        const scannedRoom = getPanelRoom(panel);
+        if (packingFormat === "room" && !scannedRoom) {
+          showMessage(
+            "This panel has no Room Name. It cannot be added in Room-wise Packing.",
+            "error"
+          );
+          setManualQR("");
+          setTimeout(() => inputRef.current?.focus(), 50);
+          return;
+        }
+
+        if (packingFormat === "room" && packet) {
+          const lockedRoom = getPacketRoom(packet);
+          if (lockedRoom && lockedRoom.toLowerCase() !== scannedRoom.toLowerCase()) {
+            showMessage(
+              `Room mismatch: this packet is for ${lockedRoom}. Scanned panel belongs to ${scannedRoom}.`,
+              "error"
+            );
+            setManualQR("");
+            setTimeout(() => inputRef.current?.focus(), 50);
+            return;
+          }
+        }
+
         if (!packet) {
           packet =
             await createOpenPacket();
 
+          if (packingFormat === "room") {
+            packet = { ...packet, room_name: scannedRoom };
+          }
           setOpenPacket(packet);
         }
 
@@ -1062,10 +1120,8 @@ function QRTracking() {
           )
         ) {
           showMessage(
-            `${getPanelLabel(
-              panel
-            )} is already inside ${packet.id}.`,
-            "error"
+            `${getPanelLabel(panel)} is already inside ${packet.id}.`,
+            "duplicate"
           );
 
           setManualQR("");
@@ -1143,6 +1199,9 @@ function QRTracking() {
         const updatedPacket =
           {
             ...packet,
+            ...(packingFormat === "room" && !getPacketRoom(packet)
+              ? { room_name: scannedRoom }
+              : {}),
 
             panelIds: [
               ...(packet.panelIds ||
@@ -1906,26 +1965,25 @@ function QRTracking() {
             }
 
             .panel-reference {
-              margin-top: 0.75mm;
-              font-size: 5.4px;
-              line-height: 1.05;
-              font-weight: 800;
-              color: #1f2937;
-              white-space: nowrap;
-              overflow: hidden;
-              text-overflow: ellipsis;
-            }
+  margin-top: 0.75mm;
+  font-size: 5.4px;
+  line-height: 1.05;
+  font-weight: 800;
+  color: #1f2937;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
-            .reference-label {
-              font-weight: 900;
-              color: #111827;
-            }
+.reference-label {
+  display: none !important;
+}
 
-            .reference-separator {
-              padding: 0 0.7mm;
-              color: #6b7280;
-              font-weight: 900;
-            }
+.reference-separator {
+  padding: 0 0.7mm;
+  color: #6b7280;
+  font-weight: 900;
+}
 
             .panel-label {
               font-size: 5.8px;
@@ -5673,6 +5731,44 @@ function QRTracking() {
               </div>
             </div>
 
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                marginTop: 6,
+                marginBottom: 6,
+                flexShrink: 0,
+                flexWrap: "wrap",
+              }}
+            >
+              <label htmlFor="trackerz-packing-format" style={{ fontSize: 10, fontWeight: 800, color: "#374151" }}>
+                Packing Format
+              </label>
+              <select
+                id="trackerz-packing-format"
+                value={packingFormat}
+                onChange={(event) => {
+                  if (openPacket?.panelIds?.length && event.target.value !== packingFormat) {
+                    showMessage("Close the current packet before changing Packing Format.", "error");
+                    return;
+                  }
+                  setPackingFormat(event.target.value);
+                  showMessage(event.target.value === "room" ? "Room-wise Packing enabled. First scanned panel sets the packet room." : "Normal Packing enabled.", "success");
+                }}
+                disabled={Boolean(openPacket?.panelIds?.length) || actionLoading}
+                style={{ border: "1px solid #d1d5db", borderRadius: 6, padding: "5px 8px", background: "#fff", fontSize: 10, fontWeight: 700 }}
+              >
+                <option value="normal">Normal Packing</option>
+                <option value="room">Room-wise Packing</option>
+              </select>
+              {packingFormat === "room" && openPacket && (
+                <span style={{ fontSize: 10, fontWeight: 800, color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 5, padding: "5px 8px" }}>
+                  ROOM: {getPacketRoom(openPacket) || "Waiting for first panel"}
+                </span>
+              )}
+            </div>
+
             {/* CURRENT OPEN PACKET */}
 
             {openPacket && (
@@ -5684,10 +5780,10 @@ function QRTracking() {
                     0,
 
                   border:
-                    "1px solid #fed7aa",
+                    "1px solid #e5e7eb",
 
                   background:
-                    "#fff7ed",
+                    "#ffffff",
 
                   borderRadius:
                     8,
@@ -5718,7 +5814,7 @@ function QRTracking() {
                         "block",
 
                       color:
-                        "#c2410c",
+                        "#6b7280",
 
                       fontWeight:
                         700,
@@ -5765,7 +5861,7 @@ function QRTracking() {
                       9,
 
                     color:
-                      "#c2410c",
+                      "#374151",
 
                     fontWeight:
                       700,
@@ -5898,22 +5994,25 @@ function QRTracking() {
                   6,
 
                 background:
-                  messageType ===
-                  "error"
+                  messageType === "error"
                     ? "#fef2f2"
-                    : "#f0fdf4",
+                    : messageType === "duplicate"
+                      ? "#fff7ed"
+                      : "#f0fdf4",
 
                 border:
-                  messageType ===
-                  "error"
+                  messageType === "error"
                     ? "1px solid #fecaca"
-                    : "1px solid #bbf7d0",
+                    : messageType === "duplicate"
+                      ? "1px solid #fdba74"
+                      : "1px solid #bbf7d0",
 
                 color:
-                  messageType ===
-                  "error"
+                  messageType === "error"
                     ? "#b91c1c"
-                    : "#166534",
+                    : messageType === "duplicate"
+                      ? "#c2410c"
+                      : "#166534",
 
                 fontSize:
                   10,
@@ -5987,3 +6086,5 @@ function QRTracking() {
 }
 
 export default QRTracking;
+
+

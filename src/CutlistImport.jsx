@@ -72,6 +72,9 @@ export default function CutlistImport({
     selectedSite?.address || ""
   );
 
+  // Packing is chosen during cutlist import and saved per site.
+  const [packingFormat, setPackingFormat] = useState("normal");
+
   const [released, setReleased] = useState(false);
 
   const [releasedSite, setReleasedSite] = useState(
@@ -94,6 +97,7 @@ export default function CutlistImport({
   const rows = Array.isArray(importRows)
     ? importRows
     : [];
+
 
   /* =====================================================
      TEXT HELPERS
@@ -596,6 +600,7 @@ export default function CutlistImport({
     setClientName("");
     setContact("");
     setAddress("");
+    setPackingFormat("normal");
 
     setReleased(false);
     setReleasedSite(null);
@@ -705,6 +710,19 @@ export default function CutlistImport({
         newSite
       );
 
+      // Save the selected packing format for this site.
+      // QRTracking can read this site-scoped setting; other sites remain unaffected.
+      try {
+        window.localStorage.setItem(
+          `trackerzPackingConfig:${newSite.id}`,
+          JSON.stringify({
+            format: packingFormat,
+          })
+        );
+      } catch (storageError) {
+        console.warn("Could not save packing configuration locally:", storageError);
+      }
+
       /* -----------------------------------------------
          EXACT CUTLIST FIELD MAPPING
 
@@ -760,6 +778,11 @@ export default function CutlistImport({
 
           row["room_name"] =
             mapping.roomName;
+
+          // Apply the single Cutlist Import dropdown choice to every panel row.
+          // This is the selected site-wide packing mode, not a room selector.
+          row["Packing Format"] = packingFormat;
+          row["packing_format"] = packingFormat;
         }
       );
 
@@ -2326,6 +2349,40 @@ export default function CutlistImport({
                   : "WAITING"}
             </strong>
           </div>
+        </div>
+
+        {/* =================================================
+            PACKING FORMAT - ONE SITE-WIDE SELECTION
+        ================================================= */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "minmax(220px, 1fr)",
+            gap: "10px",
+            marginTop: "12px",
+            padding: "12px",
+            border: "1px solid #bfdbfe",
+            borderRadius: "9px",
+            background: "#eff6ff",
+          }}
+        >
+          <label>
+            <span style={labelStyle}>Packing Format</span>
+            <select
+              value={packingFormat}
+              onChange={(event) => {
+                setPackingFormat(event.target.value);
+                setReleased(false);
+                setReleasedSite(null);
+              }}
+              disabled={released || importing}
+              style={inputStyle}
+            >
+              <option value="normal">Normal Packing</option>
+              <option value="room">Room-wise Packing</option>
+            </select>
+          </label>
+
         </div>
 
         {/* =================================================

@@ -12,6 +12,8 @@ import QRTracking from "./QRTracking";
 import Production from "./Production";
 import Dispatch from "./Dispatch";
 import OwnerDashboard from "./OwnerDashboard";
+import EmployeeAccess from "./EmployeeAccess";
+import OfficeManagement from "./OfficeManagement";
 
 import "./App.css";
 
@@ -87,6 +89,8 @@ function App() {
   ====================================================== */
 
   const [companyName, setCompanyName] = useState("");
+  const [companyContext, setCompanyContext] = useState(null);
+  const [companyContextLoading, setCompanyContextLoading] = useState(true);
 
   /* ======================================================
      NAVIGATION
@@ -94,6 +98,23 @@ function App() {
 
   const [activePage, setActivePage] = useState("dashboard");
   const [selectedSite, setSelectedSite] = useState(null);
+
+  // Main workspace switch. Existing production pages remain unchanged.
+  const [activeWorkspace, setActiveWorkspace] = useState("production");
+  const [managementSection, setManagementSection] = useState("overview");
+  const [managementSearch, setManagementSearch] = useState("");
+  const [managementStatus, setManagementStatus] = useState("all");
+  const [managementMonth, setManagementMonth] = useState(new Date().toISOString().slice(0, 7));
+  const [managementBills, setManagementBills] = useState([]);
+  const [managementPayments, setManagementPayments] = useState([]);
+  const [managementExpenses, setManagementExpenses] = useState([]);
+  const [managementLoading, setManagementLoading] = useState(false);
+  const [showBillForm, setShowBillForm] = useState(false);
+  const [showExpenseForm, setShowExpenseForm] = useState(false);
+  const [paymentBill, setPaymentBill] = useState(null);
+  const [billForm, setBillForm] = useState({ bill_date: new Date().toISOString().slice(0, 10), reference: "", work_description: "", board_count: "0", amount: "", gst_amount: "0", tds_amount: "0", notes: "" });
+  const [expenseForm, setExpenseForm] = useState({ expense_date: new Date().toISOString().slice(0, 10), category: "Rent", description: "", amount: "", payment_mode: "", reference: "", notes: "" });
+  const [paymentForm, setPaymentForm] = useState({ payment_date: new Date().toISOString().slice(0, 10), amount: "", payment_mode: "Bank Transfer", reference: "", notes: "" });
 
   /* ======================================================
      DASHBOARD TABS
@@ -291,91 +312,148 @@ function App() {
   }, [session]);
 
   /* ======================================================
-     LOAD DATA AFTER LOGIN
-  ====================================================== */
+     LOAD COMPANY MODULES + EMPLOYEE PERMISSIONS
 
-  useEffect(() => {
-    if (!session) return;
-
-    loadAllData();
-  }, [session]);
-
-  /* ======================================================
-     LOAD LOGGED-IN USER COMPANY
+     A Management-only login must never query Production tables.
+     The company membership, module subscription and employee
+     permission record are loaded before either workspace starts.
   ====================================================== */
 
   useEffect(() => {
     if (!session?.user?.id) {
+      setCompanyContext(null);
       setCompanyName("");
+      setCompanyContextLoading(false);
       return;
     }
-
-    loadCompanyName();
+    loadCompanyContext();
   }, [session]);
 
-  async function loadCompanyName() {
+  async function loadCompanyContext() {
+    setCompanyContextLoading(true);
     try {
       const userId = session?.user?.id;
-
       if (!userId) {
+        setCompanyContext(null);
         setCompanyName("");
         return;
       }
 
-      /*
-       * Existing company membership logic.
-       * RLS continues to determine what the user can see.
-       */
-
-      const {
-        data: membership,
-        error: membershipError,
-      } = await supabase
+      const { data: membership, error: membershipError } = await supabase
         .from("company_users")
         .select("company_id")
         .eq("user_id", userId)
         .maybeSingle();
+      if (membershipError) throw membershipError;
 
-      if (membershipError) {
-        throw membershipError;
-      }
-
+      // A newly invited employee has no membership until they accept.
       if (!membership?.company_id) {
+        setCompanyContext(null);
         setCompanyName("");
+        setSites([]);
+        setPanels([]);
+        setPackets([]);
+        setPacketPanels([]);
         return;
       }
 
-      const {
-        data: company,
-        error: companyError,
-      } = await supabase
-        .from("companies")
-        .select("company_name")
-        .eq("id", membership.company_id)
-        .single();
+      const [companyResult, moduleResult, accessResult] = await Promise.all([
+        supabase.from("companies")
+          .select("id, company_name, owner_user_id")
+          .eq("id", membership.company_id)
+          .single(),
+        supabase.from("company_modules")
+          .select("production_enabled, management_enabled")
+          .eq("company_id", membership.company_id)
+          .maybeSingle(),
+        supabase.from("company_user_access")
+          .select("role, production_access, management_access, permissions, status")
+          .eq("company_id", membership.company_id)
+          .eq("user_id", userId)
+          .maybeSingle(),
+      ]);
 
-      if (companyError) {
-        throw companyError;
+      if (companyResult.error) throw companyResult.error;
+      if (moduleResult.error) throw moduleResult.error;
+      if (accessResult.error) throw accessResult.error;
+
+      const company = companyResult.data;
+      const modules = moduleResult.data || {};
+      const access = accessResult.data || {};
+      const isCompanyOwner = company?.owner_user_id === userId;
+      const isActive = isCompanyOwner || access.status === "active";
+      const productionAccess = Boolean(
+        isActive && modules.production_enabled &&
+        (isCompanyOwner || access.production_access)
+      );
+      const managementAccess = Boolean(
+        isActive && modules.management_enabled &&
+        (isCompanyOwner || access.management_access)
+      );
+
+      const nextContext = {
+        companyId: membership.company_id,
+        companyName: company?.company_name || "",
+        isCompanyOwner,
+        role: isCompanyOwner ? "owner" : (access.role || "viewer"),
+        productionAccess,
+        managementAccess,
+        permissions: access.permissions || {},
+      };
+      setCompanyContext(nextContext);
+      setCompanyName(nextContext.companyName);
+
+      // Open the only entitled module automatically for single-module plans.
+      if (managementAccess && !productionAccess) {
+        setActiveWorkspace("management");
+        setManagementSection("overview");
+        setActivePage("management");
+      } else if (productionAccess && !managementAccess) {
+        setActiveWorkspace("production");
+        setActivePage("dashboard");
+      } else if (!productionAccess && !managementAccess) {
+        setActivePage("no-access");
       }
-
-      setCompanyName(
-        company?.company_name || ""
-      );
     } catch (err) {
-      console.error(
-        "Unable to load company name:",
-        err
-      );
-
+      console.error("Unable to load Trackerz company access:", err);
+      setCompanyContext(null);
       setCompanyName("");
+      setError(err.message || "Unable to verify company module access.");
+    } finally {
+      setCompanyContextLoading(false);
     }
   }
+
+  /* ======================================================
+     LOAD PRODUCTION DATA ONLY WHEN PRODUCTION IS ENTITLED
+  ====================================================== */
+
+  useEffect(() => {
+    if (!session?.user?.id || companyContextLoading) return;
+    if (companyContext?.productionAccess) {
+      loadAllData();
+    } else {
+      setSites([]);
+      setPanels([]);
+      setPackets([]);
+      setPacketPanels([]);
+      setLoadingData(false);
+    }
+  }, [session, companyContextLoading, companyContext?.productionAccess]);
 
   /* ======================================================
      LOAD SITES + PANELS + PACKETS
   ====================================================== */
 
   async function loadAllData() {
+    if (!companyContext?.productionAccess) {
+      setSites([]);
+      setPanels([]);
+      setPackets([]);
+      setPacketPanels([]);
+      setLoadingData(false);
+      return;
+    }
     setLoadingData(true);
     setError("");
 
@@ -534,6 +612,93 @@ function App() {
   }
 
   /* ======================================================
+     MANAGEMENT ACCOUNTS - INDEPENDENT FROM SITES/CLIENTS
+  ====================================================== */
+
+  async function getManagementCompanyId() {
+    const userId = session?.user?.id;
+    if (!userId) throw new Error("Please sign in again.");
+    const { data, error: membershipError } = await supabase
+      .from("company_users").select("company_id").eq("user_id", userId).maybeSingle();
+    if (membershipError) throw membershipError;
+    if (!data?.company_id) throw new Error("No factory company is linked to this login.");
+    return data.company_id;
+  }
+
+  async function loadManagementData() {
+    if (!session?.user?.id) return;
+    setManagementLoading(true);
+    try {
+      const [billsResult, paymentsResult, expensesResult] = await Promise.all([
+        supabase.from("factory_bills").select("*").order("bill_date", { ascending: false }),
+        supabase.from("factory_bill_payments").select("*").order("payment_date", { ascending: false }),
+        supabase.from("factory_expenses").select("*").order("expense_date", { ascending: false }),
+      ]);
+      if (billsResult.error) throw billsResult.error;
+      if (paymentsResult.error) throw paymentsResult.error;
+      if (expensesResult.error) throw expensesResult.error;
+      setManagementBills(billsResult.data || []);
+      setManagementPayments(paymentsResult.data || []);
+      setManagementExpenses(expensesResult.data || []);
+    } catch (err) {
+      console.error("Management accounts load error:", err);
+      setError(err.message || "Unable to load management accounts. Run the supplied Supabase SQL first.");
+    } finally {
+      setManagementLoading(false);
+    }
+  }
+
+
+  async function saveManagementBill(event) {
+    event.preventDefault();
+    setError(""); setMessage("");
+    try {
+      const company_id = await getManagementCompanyId();
+      const payload = {
+        company_id, bill_date: billForm.bill_date, reference: billForm.reference.trim() || null,
+        work_description: billForm.work_description.trim(), board_count: Math.max(0, Number(billForm.board_count || 0)),
+        amount: Number(billForm.amount), gst_amount: Number(billForm.gst_amount || 0),
+        tds_amount: Number(billForm.tds_amount || 0), notes: billForm.notes.trim() || null,
+      };
+      if (!payload.work_description || !(payload.amount > 0)) throw new Error("Enter a description and a valid bill amount.");
+      const { error: insertError } = await supabase.from("factory_bills").insert(payload);
+      if (insertError) throw insertError;
+      setBillForm({ bill_date: new Date().toISOString().slice(0, 10), reference: "", work_description: "", board_count: "0", amount: "", gst_amount: "0", tds_amount: "0", notes: "" });
+      setShowBillForm(false); setMessage("Billing entry saved."); await loadManagementData();
+    } catch (err) { setError(err.message || "Unable to save billing entry."); }
+  }
+
+  async function saveManagementExpense(event) {
+    event.preventDefault(); setError(""); setMessage("");
+    try {
+      const company_id = await getManagementCompanyId();
+      const payload = { company_id, expense_date: expenseForm.expense_date, category: expenseForm.category.trim(), description: expenseForm.description.trim() || null, amount: Number(expenseForm.amount), payment_mode: expenseForm.payment_mode || null, reference: expenseForm.reference.trim() || null, notes: expenseForm.notes.trim() || null };
+      if (!payload.category || !(payload.amount > 0)) throw new Error("Enter an expense category and a valid amount.");
+      const { error: insertError } = await supabase.from("factory_expenses").insert(payload);
+      if (insertError) throw insertError;
+      setExpenseForm({ expense_date: new Date().toISOString().slice(0, 10), category: "Rent", description: "", amount: "", payment_mode: "", reference: "", notes: "" });
+      setShowExpenseForm(false); setMessage("Expense entry saved."); await loadManagementData();
+    } catch (err) { setError(err.message || "Unable to save expense."); }
+  }
+
+  async function saveManagementPayment(event) {
+    event.preventDefault(); setError(""); setMessage("");
+    try {
+      if (!paymentBill?.id) throw new Error("Select a bill first.");
+      const company_id = await getManagementCompanyId();
+      const payload = { company_id, bill_id: paymentBill.id, payment_date: paymentForm.payment_date, amount: Number(paymentForm.amount), payment_mode: paymentForm.payment_mode || null, reference: paymentForm.reference.trim() || null, notes: paymentForm.notes.trim() || null };
+      const billPayments = managementPayments.filter((p) => p.bill_id === paymentBill.id).reduce((sum, p) => sum + Number(p.amount || 0), 0);
+      const billDue = Number(paymentBill.amount || 0) + Number(paymentBill.gst_amount || 0) - Number(paymentBill.tds_amount || 0);
+      if (!(payload.amount > 0)) throw new Error("Enter a valid payment amount.");
+      if (payload.amount > billDue - billPayments + 0.005) throw new Error("Payment is greater than the remaining bill balance.");
+      const { error: insertError } = await supabase.from("factory_bill_payments").insert(payload);
+      if (insertError) throw insertError;
+      setPaymentBill(null); setPaymentForm({ payment_date: new Date().toISOString().slice(0, 10), amount: "", payment_mode: "Bank Transfer", reference: "", notes: "" });
+      setMessage("Payment recorded successfully."); await loadManagementData();
+    } catch (err) { setError(err.message || "Unable to record payment."); }
+  }
+
+  /* ======================================================
      LOGOUT
   ====================================================== */
 
@@ -559,6 +724,8 @@ function App() {
       setPacketPanels([]);
       setSelectedSite(null);
       setCompanyName("");
+      setCompanyContext(null);
+      setCompanyContextLoading(true);
       setActivePage("dashboard");
     } catch (err) {
       console.error(
@@ -1660,6 +1827,17 @@ function App() {
 
       const normalizedRows =
         normalizeCutlistRows(sourceRows);
+        console.log(
+  "TRACKERZ IMPORT CHECK",
+  {
+    excelHeaders: Object.keys(sourceRows[0] || {}),
+    normalizedMetadata: normalizedRows.slice(0, 5).map((row) => ({
+      cabinet_name: row.cabinet_name,
+      section_name: row.section_name,
+      room_name: row.room_name,
+    })),
+  }
+);
 
       if (!normalizedRows.length) {
         throw new Error(
@@ -2342,219 +2520,170 @@ function App() {
   ====================================================== */
 
   function renderNavigation() {
+    const productionPages = [
+      { id: "dashboard", icon: "▦", label: "Dashboard" },
+      { id: "cutlist", icon: "▤", label: "Cutlist Import" },
+      { id: "qr", icon: "⌗", label: "QR Tracking" },
+      { id: "reports", icon: "▥", label: "Production Reports" },
+      { id: "dispatch", icon: "⇢", label: "Dispatch" },
+      { id: "sites", icon: "⌂", label: "Sites" },
+    ];
+
+    const managementPermissions = companyContext?.permissions || {};
+    const canManagement = (permission) => companyContext?.isCompanyOwner || managementPermissions["*"] === true || managementPermissions[permission] === true;
+    const managementPages = [
+      { id: "overview", icon: "▦", label: "Home / Dashboard" },
+      ...(canManagement("management.bills.view") || canManagement("management.bills.create")
+        ? [{ id: "invoices", icon: "▤", label: "Customer Invoices" }]
+        : []),
+      ...(canManagement("management.payables.view") || canManagement("management.payables.create")
+        ? [
+            { id: "purchase-orders", icon: "▣", label: "Purchase Orders" },
+            { id: "vendors", icon: "♙", label: "Vendors" },
+          ]
+        : []),
+      ...(canManagement("management.expenses.view") || canManagement("management.expenses.create")
+        ? [{ id: "expenses", icon: "▧", label: "Expenses" }]
+        : []),
+      ...(canManagement("management.reports.view")
+        ? [{ id: "reports", icon: "▥", label: "Reports" }]
+        : []),
+      ...(companyContext?.isCompanyOwner
+        ? [{ id: "team", icon: "♙", label: "Employees & Access" }]
+        : []),
+      ...(companyContext?.managementAccess
+        ? [{ id: "settings", icon: "⚙", label: "Settings" }]
+        : []),
+    ];
+
     return (
       <aside className="sidebar">
-
         <div className="logo">
-
-          <div className="logo-mark">
-            T
-          </div>
-
+          <div className="logo-mark">T</div>
           <div>
-            <h1>
-              TRACKERZ
-            </h1>
-
-            <span>
-              Panel Production System
-            </span>
-
+            <h1>TRACKERZ</h1>
+            <span>Business Management Platform</span>
             {companyName && (
-              <div
-                style={{
-                  marginTop: "8px",
-                  fontSize: "12px",
-                  fontWeight: "700",
-                  color: "#2563eb",
-                  letterSpacing: "0.4px",
-                }}
-              >
+              <div style={{
+                marginTop: "8px",
+                fontSize: "12px",
+                fontWeight: "700",
+                color: "#2563eb",
+                letterSpacing: "0.4px",
+              }}>
                 {companyName}
               </div>
             )}
           </div>
+        </div>
 
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: companyContext?.productionAccess && companyContext?.managementAccess ? "1fr 1fr" : "1fr",
+          gap: "6px",
+          padding: "12px 14px",
+          borderBottom: "1px solid #e5e7eb",
+        }}>
+          {companyContext?.productionAccess && (
+            <button type="button" onClick={() => { setActiveWorkspace("production"); navigateTo("dashboard"); }}
+              style={{ border: "1px solid #2563eb", borderRadius: "8px", padding: "10px 6px", cursor: "pointer", fontWeight: 700, background: activeWorkspace === "production" ? "#2563eb" : "#fff", color: activeWorkspace === "production" ? "#fff" : "#374151" }}>
+              Production
+            </button>
+          )}
+          {companyContext?.managementAccess && (
+            <button type="button" onClick={() => { setActiveWorkspace("management"); setManagementSection("overview"); setActivePage("management"); setError(""); setMessage(""); }}
+              style={{ border: "1px solid #2563eb", borderRadius: "8px", padding: "10px 6px", cursor: "pointer", fontWeight: 700, background: activeWorkspace === "management" ? "#2563eb" : "#fff", color: activeWorkspace === "management" ? "#fff" : "#374151" }}>
+              Management
+            </button>
+          )}
         </div>
 
         <nav>
+          {(activeWorkspace === "production" ? productionPages : managementPages).map((item) => {
+            const isActive = activeWorkspace === "production"
+              ? activePage === item.id
+              : item.id === "team"
+                ? activePage === "team"
+                : activePage === "management" && managementSection === item.id;
 
-          <button
-            className={`nav-item ${
-              activePage ===
-              "dashboard"
-                ? "active"
-                : ""
-            }`}
-            onClick={() =>
-              navigateTo(
-                "dashboard"
-              )
-            }
-          >
-            <span>▦</span>
-            Dashboard
-          </button>
-
-          <button
-            className={`nav-item ${
-              activePage ===
-              "cutlist"
-                ? "active"
-                : ""
-            }`}
-            onClick={() =>
-              navigateTo(
-                "cutlist"
-              )
-            }
-          >
-            <span>▤</span>
-            Cutlist Import
-          </button>
-
-          <button
-            className={`nav-item ${
-              activePage ===
-              "qr"
-                ? "active"
-                : ""
-            }`}
-            onClick={() =>
-              navigateTo("qr")
-            }
-          >
-            <span>⌗</span>
-            QR Tracking
-          </button>
-
-          <button
-            className={`nav-item ${
-              activePage ===
-              "reports"
-                ? "active"
-                : ""
-            }`}
-            onClick={() =>
-              navigateTo(
-                "reports"
-              )
-            }
-          >
-            <span>▥</span>
-            Reports
-          </button>
-
-          <button
-            className={`nav-item ${
-              activePage ===
-              "dispatch"
-                ? "active"
-                : ""
-            }`}
-            onClick={() =>
-              navigateTo(
-                "dispatch"
-              )
-            }
-          >
-            <span>⇢</span>
-            Dispatch
-          </button>
-
-          <button
-            className={`nav-item ${
-              activePage ===
-              "sites"
-                ? "active"
-                : ""
-            }`}
-            onClick={() =>
-              navigateTo(
-                "sites"
-              )
-            }
-          >
-            <span>⌂</span>
-            Sites
-          </button>
-
+            return (
+              <button
+                key={item.id}
+                className={`nav-item ${isActive ? "active" : ""}`}
+                onClick={() => {
+                  if (activeWorkspace === "production") {
+                    navigateTo(item.id);
+                  } else if (item.id === "team") {
+                    navigateTo("team");
+                  } else {
+                    setManagementSection(item.id);
+                    setActivePage("management");
+                    setSelectedSite(null);
+                    setError("");
+                    setMessage("");
+                  }
+                }}
+              >
+                <span>{item.icon}</span>
+                {item.label}
+              </button>
+            );
+          })}
         </nav>
 
         <div className="sidebar-bottom">
-
-          <button
-            className={`nav-item ${
-              activePage ===
-              "settings"
-                ? "active"
-                : ""
-            }`}
-            onClick={() =>
-              navigateTo(
-                "settings"
-              )
-            }
-          >
-            <span>⚙</span>
-            Settings
-          </button>
+          {activeWorkspace === "production" && companyContext?.isCompanyOwner && (
+            <button className={`nav-item ${activePage === "team" ? "active" : ""}`} onClick={() => navigateTo("team")}>
+              <span>♙</span>
+              Employees & Access
+            </button>
+          )}
+          {activeWorkspace === "production" && companyContext?.productionAccess && (
+            <button
+              className={`nav-item ${activePage === "settings" ? "active" : ""}`} 
+              onClick={() => {
+                if (activeWorkspace === "management" && companyContext?.managementAccess) {
+                  setManagementSection("settings");
+                  setActivePage("management");
+                  setError("");
+                  setMessage("");
+                } else {
+                  navigateTo("settings");
+                }
+              }}
+            >
+              <span>⚙</span>
+              Settings
+            </button>
+          )}
 
           <div className="user">
-
             <div className="avatar">
-              {(
-                session?.user
-                  ?.email ||
-                "A"
-              )
-                .charAt(0)
-                .toUpperCase()}
+              {(session?.user?.email || "A").charAt(0).toUpperCase()}
             </div>
-
             <div>
-              <strong>
-                {session?.user
-                  ?.email ||
-                  "Admin"}
-              </strong>
-
-              <small>
-                Factory Manager
-              </small>
+              <strong>{session?.user?.email || "Admin"}</strong>
+              <small>{(companyContext?.role || "Employee").replaceAll("_", " ")}</small>
             </div>
-
           </div>
 
           <button
-            onClick={
-              handleLogout
-            }
+            onClick={handleLogout}
             style={{
               width: "100%",
-              marginTop:
-                "12px",
-              padding:
-                "9px 12px",
-              border:
-                "1px solid #d1d5db",
-              background:
-                "#ffffff",
-              color:
-                "#374151",
-              borderRadius:
-                "7px",
-              cursor:
-                "pointer",
-              fontWeight:
-                "600",
+              marginTop: "12px",
+              padding: "9px 12px",
+              border: "1px solid #d1d5db",
+              background: "#ffffff",
+              color: "#374151",
+              borderRadius: "7px",
+              cursor: "pointer",
+              fontWeight: "600",
             }}
           >
             Sign Out
           </button>
-
         </div>
-
       </aside>
     );
   }
@@ -4587,10 +4716,59 @@ function App() {
   }
 
   /* ======================================================
+     MANAGEMENT WORKSPACE
+     Independent office accounts: receivables, payables,
+     partial payments, expenses and monthly reports.
+     No Production sites or panel data is used here.
+  ====================================================== */
+
+  function renderManagementPage() {
+    return (
+      <OfficeManagement
+        supabase={supabase}
+        companyId={companyContext?.companyId}
+        section={managementSection}
+        setSection={setManagementSection}
+        permissions={companyContext?.permissions || {}}
+        isCompanyOwner={!!companyContext?.isCompanyOwner}
+      />
+    );
+  }
+
+  /* ======================================================
      PAGE ROUTING
   ====================================================== */
 
   function renderPage() {
+    if (companyContextLoading) {
+      return <div className="loading-bar">Loading your Trackerz workspace…</div>;
+    }
+
+    if (!companyContext) {
+      return <EmployeeAccess supabase={supabase} isCompanyOwner={false} onAccessChanged={loadCompanyContext} />;
+    }
+
+    if (activePage === "team") {
+      if (!companyContext.isCompanyOwner) return <section style={{ padding: 24, background: "#fff", borderRadius: 12 }}>Only the company owner can manage employee access.</section>;
+      return <EmployeeAccess supabase={supabase} isCompanyOwner={true} onAccessChanged={loadCompanyContext} />;
+    }
+
+    if (!companyContext.productionAccess && !companyContext.managementAccess && !companyContext.isCompanyOwner) {
+      return <EmployeeAccess supabase={supabase} isCompanyOwner={false} onAccessChanged={loadCompanyContext} />;
+    }
+
+    if (activePage === "management" && !companyContext.managementAccess) {
+      return <section style={{ padding: 24, background: "#fff", borderRadius: 12 }}>Management access is not enabled for this login. Contact your company owner.</section>;
+    }
+
+    if (activePage !== "management" && activePage !== "settings" && activePage !== "team" && !companyContext.productionAccess) {
+      return <section style={{ padding: 24, background: "#fff", borderRadius: 12 }}>Production access is not enabled for this login. Contact your company owner.</section>;
+    }
+
+    if (activePage === "management") {
+      return renderManagementPage();
+    }
+
     if (
       activePage ===
       "dashboard"
@@ -4858,6 +5036,30 @@ function App() {
   if (isOwner) {
     return (
       <OwnerDashboard />
+    );
+  }
+
+  /* ======================================================
+     COMPANY ACCESS LOADING / INVITATION ACCEPTANCE
+  ====================================================== */
+
+  if (companyContextLoading) {
+    return (
+      <div className="app-loading">
+        <div className="loading-card"><h2>Trackerz</h2><p>Loading company access…</p></div>
+      </div>
+    );
+  }
+
+  if (!companyContext) {
+    return (
+      <div className="app">
+        <main className="main" style={{ maxWidth: 900, margin: "0 auto", width: "100%" }}>
+          {error && <div className="alert error-alert">{error}</div>}
+          <EmployeeAccess supabase={supabase} isCompanyOwner={false} onAccessChanged={loadCompanyContext} />
+          <button onClick={handleLogout} style={{ marginTop: 16, padding: "9px 14px", border: "1px solid #d1d5db", borderRadius: 7, background: "#fff", cursor: "pointer" }}>Sign out</button>
+        </main>
+      </div>
     );
   }
 
